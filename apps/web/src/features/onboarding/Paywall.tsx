@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { Check, Lock, Zap } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 
 import { createCheckout } from '../../api/checkout'
 import SymbolSVG from '../../assets/Symbol.svg'
@@ -11,11 +12,13 @@ import { useOnboarding } from '../../stores/onboardingStore'
 const FALLBACK_PREVIEW_LIMIT = 6
 
 export default function Paywall() {
+  const navigate = useNavigate()
   const { events } = useEvents()
   const curatedSchedule = useOnboarding((s) => s.curatedSchedule)
   const conferenceId = useOnboarding((s) => s.state.conferenceId)
   const [payState, setPayState] = useState<'idle' | 'loading' | 'error'>('idle')
   const [payError, setPayError] = useState<string | null>(null)
+  const paywallEnabled = import.meta.env.VITE_PAYWALL_ENABLED === 'true'
 
   // Build the schedule preview shown on the left:
   // - If the LLM curated a schedule, show those events.
@@ -99,6 +102,10 @@ export default function Paywall() {
 
   const onPay = async () => {
     if (payState === 'loading') return
+    if (!paywallEnabled) {
+      navigate('/paywall/thanks')
+      return
+    }
     setPayState('loading')
     setPayError(null)
     try {
