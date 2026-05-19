@@ -143,7 +143,8 @@ export default function Onboarding() {
     }
   }, [step]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const onComplete = () => navigate('/paywall')
+  const paywallEnabled = import.meta.env.VITE_PAYWALL_ENABLED === 'true'
+  const onComplete = () => navigate(paywallEnabled ? '/paywall' : '/paywall/thanks')
 
   return (
     <div className="sq-app">
