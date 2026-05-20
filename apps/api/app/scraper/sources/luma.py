@@ -104,6 +104,27 @@ def _inline_text(nodes: list[dict[str, Any]] | None) -> str:
     return "".join(n.get("text", "") for n in nodes if n.get("type") == "text")
 
 
+def _resolve_venue(event: dict[str, Any]) -> str | None:
+    """Pick the best human-readable venue for a Luma event.
+
+    Many Luma events hide the full address until RSVP — geo_address_info
+    then carries only city_state ("Milano, Italy"). Fall through:
+      full_address → address → city_state → "Online" (virtual) → None
+    so the schedule UI shows *something* instead of an empty cell.
+    """
+    geo = event.get("geo_address_info") or {}
+    for key in ("full_address", "address", "city_state"):
+        value = geo.get(key)
+        if value:
+            return value
+    legacy = event.get("venue")
+    if legacy:
+        return legacy
+    if (event.get("location_type") or "").lower() in ("virtual", "online", "zoom"):
+        return "Online"
+    return None
+
+
 # ---------- scraper ----------
 
 
@@ -259,8 +280,7 @@ def normalize_event(
         )
         return None
 
-    geo = event.get("geo_address_info") or {}
-    venue = geo.get("full_address") or geo.get("address") or event.get("venue")
+    venue = _resolve_venue(event)
 
     url = f"{LUMA_WEB_BASE}/{event['url']}" if event.get("url") else None
 
