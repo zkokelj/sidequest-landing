@@ -33,8 +33,19 @@ class FailedEvent:
 
 
 def _entry_url(event: dict[str, Any]) -> str | None:
-    slug = event.get("url")
-    return f"{LUMA_WEB_BASE}/{slug}" if slug else None
+    """Best-effort URL for the admin failure list.
+
+    Native Luma events store a bare slug in `event.url`; external (bookmarked)
+    events store a full http(s) URL. We need to keep the two apart — prefixing
+    `https://lu.ma/` onto an already-absolute URL gave us the wrong-looking
+    `https://lu.ma/https://www.rsv.pizza/...` links the admin UI showed.
+    """
+    raw = event.get("url")
+    if not raw:
+        return None
+    if "://" in raw:
+        return raw
+    return f"{LUMA_WEB_BASE}/{raw}"
 
 
 def _capture_people(
@@ -144,11 +155,13 @@ def run_for_source(
     stats = SourceScrapeStats()
     for entry in entries:
         event = entry.get("event") or {}
-        api_id = event.get("api_id")
+        event_api_id = event.get("api_id")
+        # Fall back to the envelope `calev-…` id for external (non-Luma) entries.
+        api_id = event_api_id or entry.get("api_id")
         url = _entry_url(event)
         title = event.get("name")
         try:
-            details = details_map.get(api_id) if api_id else None
+            details = details_map.get(event_api_id) if event_api_id else None
             row = normalize_event(
                 entry,
                 conference_id=conference_id,
@@ -157,9 +170,9 @@ def run_for_source(
             )
             if row is None:
                 stats.events_failed += 1
-                missing = [
-                    k for k in ("api_id", "name", "start_at") if not event.get(k)
-                ]
+                missing = [k for k in ("name", "start_at") if not event.get(k)]
+                if not api_id:
+                    missing.insert(0, "api_id")
                 stats.failed_events.append(
                     FailedEvent(
                         api_id=api_id,
