@@ -25,6 +25,10 @@ from app.services.scrape_sources_repo import (
     InMemoryScrapeSourcesRepo,
     get_scrape_sources_repo,
 )
+from app.services.suggestions_repo import (
+    InMemorySuggestionsRepo,
+    get_suggestions_repo,
+)
 
 ADMIN_ID = "00000000-aaaa-aaaa-aaaa-000000000001"
 
@@ -210,23 +214,102 @@ def test_run_for_source_skips_locked_rows() -> None:
     assert row["title"] == "Admin-edited title"
 
 
+def test_run_for_source_captures_hosts_and_featured_guests() -> None:
+    """Hosts + featured_guests from /event/get should land in
+    conference_suggestions with source='luma'. Re-scraping the same
+    name in another event should no-op (PK collision via slug)."""
+    handler = _build_handler(
+        events_by_calendar={
+            "cal_xyz": [
+                _event("e1", "DeFi Mafia Tram Party", 20),
+                _event("e2", "Builders Breakfast", 9),
+            ]
+        },
+        details_by_api_id={
+            "e1": {
+                "hosts": [
+                    {"name": "DavideFi", "bio_short": "GM at LFJ dex"},
+                    {"name": "C-l.hl",   "bio_short": "Bd @ Pear Protocol"},
+                ],
+                "featured_guests": [
+                    {"name": "Julian Morla", "bio_short": "Head of Integrations @ LI.FI"},
+                    {"name": "",             "bio_short": "should be skipped"},
+                ],
+            },
+            "e2": {
+                # DavideFi shows up again as a guest at a second event — dedup.
+                "featured_guests": [
+                    {"name": "davidefi", "bio_short": "DIFFERENT bio_short"},
+                    {"name": "Andrea Mars", "bio_short": "Organizer"},
+                ],
+            },
+        },
+    )
+    events_repo = InMemoryEventsAdminRepo()
+    suggestions_repo = InMemorySuggestionsRepo()
+
+    with _scraper_with(handler) as scraper:
+        stats = run_for_source(
+            conference_id="token2049",
+            source_url="https://lu.ma/token2049",
+            events_repo=events_repo,
+            suggestions_repo=suggestions_repo,
+            scraper=scraper,
+        )
+
+    # 4 distinct people: DavideFi, C-l.hl, Julian Morla, Andrea Mars
+    assert stats.suggestions_added == 4
+    rows = {r["name"]: r for r in suggestions_repo.list_for_conference("token2049")}
+    assert set(rows.keys()) == {"DavideFi", "C-l.hl", "Julian Morla", "Andrea Mars"}
+    # All rows tagged with source='luma' so the admin UI can tell them apart.
+    assert all(r["source"] == "luma" for r in rows.values())
+    # First role for DavideFi wins (the one from e1), not the e2 one.
+    assert rows["DavideFi"]["role"] == "GM at LFJ dex"
+    # Source event id captured so admins can see WHICH event surfaced the person.
+    assert rows["DavideFi"]["meta"]["source_event_id"] == "luma:e1"
+
+
+def test_run_for_source_without_suggestions_repo_skips_capture() -> None:
+    """Backwards-compat: callers that don't pass a suggestions_repo must
+    still work — the events upsert path is unchanged."""
+    handler = _build_handler(
+        events_by_calendar={"cal_xyz": [_event("e1", "Foo", 9)]},
+        details_by_api_id={"e1": {"hosts": [{"name": "Someone"}]}},
+    )
+    events_repo = InMemoryEventsAdminRepo()
+    with _scraper_with(handler) as scraper:
+        stats = run_for_source(
+            conference_id="c1",
+            source_url="https://lu.ma/c1",
+            events_repo=events_repo,
+            scraper=scraper,
+        )
+    assert stats.events_added == 1
+    assert stats.suggestions_added == 0
+
+
 # ---------- admin trigger endpoint integration ----------
 
 
-def _setup_admin_routes() -> tuple[InMemoryEventsAdminRepo, InMemoryScrapeSourcesRepo]:
+def _setup_admin_routes() -> tuple[
+    InMemoryEventsAdminRepo, InMemoryScrapeSourcesRepo, InMemorySuggestionsRepo
+]:
     events_repo = InMemoryEventsAdminRepo()
     sources_repo = InMemoryScrapeSourcesRepo()
+    suggestions_repo = InMemorySuggestionsRepo()
     app.dependency_overrides[get_events_admin_repo] = lambda: events_repo
     app.dependency_overrides[get_scrape_sources_repo] = lambda: sources_repo
+    app.dependency_overrides[get_suggestions_repo] = lambda: suggestions_repo
     app.dependency_overrides[require_admin] = _admin
     app.dependency_overrides[require_user] = _admin
-    return events_repo, sources_repo
+    return events_repo, sources_repo, suggestions_repo
 
 
 def _teardown_admin_routes() -> None:
     for dep in (
         get_events_admin_repo,
         get_scrape_sources_repo,
+        get_suggestions_repo,
         require_admin,
         require_user,
     ):
@@ -234,7 +317,7 @@ def _teardown_admin_routes() -> None:
 
 
 def test_trigger_scrape_no_sources_returns_ok() -> None:
-    events_repo, sources_repo = _setup_admin_routes()
+    events_repo, sources_repo, suggestions_repo = _setup_admin_routes()
     try:
         client = TestClient(app)
         resp = client.post("/api/admin/conferences/token2049/scrape")
@@ -248,7 +331,7 @@ def test_trigger_scrape_no_sources_returns_ok() -> None:
 
 
 def test_trigger_scrape_runs_real_scraper_via_monkeypatch(monkeypatch) -> None:
-    events_repo, sources_repo = _setup_admin_routes()
+    events_repo, sources_repo, suggestions_repo = _setup_admin_routes()
     try:
         sources_repo.create(
             conference_id="token2049", url="https://lu.ma/token2049", enabled=True
@@ -295,7 +378,7 @@ def test_trigger_scrape_runs_real_scraper_via_monkeypatch(monkeypatch) -> None:
 
 def test_trigger_scrape_surfaces_failed_events(monkeypatch) -> None:
     """A Luma entry missing start_at should land in failed_events with a useful reason."""
-    events_repo, sources_repo = _setup_admin_routes()
+    events_repo, sources_repo, suggestions_repo = _setup_admin_routes()
     try:
         sources_repo.create(
             conference_id="token2049", url="https://lu.ma/token2049", enabled=True
@@ -330,7 +413,7 @@ def test_trigger_scrape_surfaces_failed_events(monkeypatch) -> None:
 
 
 def test_trigger_scrape_records_error_when_source_fails(monkeypatch) -> None:
-    events_repo, sources_repo = _setup_admin_routes()
+    events_repo, sources_repo, suggestions_repo = _setup_admin_routes()
     try:
         # Two sources: one good, one that 404s on /url
         sources_repo.create(

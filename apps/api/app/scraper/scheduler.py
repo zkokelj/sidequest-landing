@@ -34,6 +34,7 @@ from app.scraper.luma_runner import run_for_source
 from app.services.admin_repo import EventsAdminRepo
 from app.services.scheduler_settings_repo import SchedulerSettingsRepo
 from app.services.scrape_sources_repo import ScrapeSourcesRepo
+from app.services.suggestions_repo import SuggestionsRepo
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +46,13 @@ class Scheduler:
         sources_repo: ScrapeSourcesRepo,
         events_repo: EventsAdminRepo,
         settings_repo: SchedulerSettingsRepo,
+        suggestions_repo: SuggestionsRepo | None = None,
         tick_seconds: int = 60,
     ) -> None:
         self._sources_repo = sources_repo
         self._events_repo = events_repo
         self._settings_repo = settings_repo
+        self._suggestions_repo = suggestions_repo
         self._tick_seconds = tick_seconds
         self._task: asyncio.Task[None] | None = None
         self._tick_lock = asyncio.Lock()
@@ -129,6 +132,7 @@ class Scheduler:
                         conference_id=source["conference_id"],
                         source_url=source["url"],
                         events_repo=self._events_repo,
+                        suggestions_repo=self._suggestions_repo,
                     )
                     await asyncio.to_thread(
                         self._sources_repo.record_scrape,
@@ -180,10 +184,12 @@ def build_scheduler(
     sources_repo: ScrapeSourcesRepo,
     events_repo: EventsAdminRepo,
     settings_repo: SchedulerSettingsRepo,
+    suggestions_repo: SuggestionsRepo | None = None,
 ) -> Scheduler:
     return Scheduler(
         sources_repo=sources_repo,
         events_repo=events_repo,
         settings_repo=settings_repo,
+        suggestions_repo=suggestions_repo,
         tick_seconds=settings.scraper_scheduler_tick_seconds,
     )

@@ -63,7 +63,7 @@ async def test_tick_processes_only_due_sources(monkeypatch) -> None:
 
     calls: list[str] = []
 
-    def fake_run(*, conference_id, source_url, events_repo):
+    def fake_run(*, conference_id, source_url, events_repo, suggestions_repo=None):
         calls.append(source_url)
         return SourceScrapeStats(events_added=2, events_updated=0)
 
@@ -100,7 +100,7 @@ async def test_tick_records_error_when_runner_raises(monkeypatch) -> None:
         scrape_interval_minutes=15,
     )
 
-    def fake_run(*, conference_id, source_url, events_repo):
+    def fake_run(*, conference_id, source_url, events_repo, suggestions_repo=None):
         raise RuntimeError("luma is down")
 
     monkeypatch.setattr("app.scraper.scheduler.run_for_source", fake_run)
@@ -131,7 +131,7 @@ async def test_one_bad_source_doesnt_block_the_others(monkeypatch) -> None:
         conference_id="c1", url="https://lu.ma/bad", scrape_interval_minutes=15
     )
 
-    def fake_run(*, conference_id, source_url, events_repo):
+    def fake_run(*, conference_id, source_url, events_repo, suggestions_repo=None):
         if source_url == "https://lu.ma/bad":
             raise RuntimeError("nope")
         return SourceScrapeStats(events_added=1)
@@ -163,7 +163,7 @@ async def test_tick_skips_everything_when_disabled(monkeypatch) -> None:
 
     calls: list[str] = []
 
-    def fake_run(*, conference_id, source_url, events_repo):
+    def fake_run(*, conference_id, source_url, events_repo, suggestions_repo=None):
         calls.append(source_url)
         return SourceScrapeStats(events_added=1)
 
@@ -193,7 +193,7 @@ async def test_concurrent_tick_is_skipped(monkeypatch) -> None:
     call_count = 0
     gate = asyncio.Event()
 
-    def fake_run(*, conference_id, source_url, events_repo):
+    def fake_run(*, conference_id, source_url, events_repo, suggestions_repo=None):
         nonlocal call_count
         call_count += 1
         # Block until the gate is set, simulating a slow Luma fetch.
