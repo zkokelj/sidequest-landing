@@ -13,6 +13,7 @@ from app.models.schemas import (
     AdminEventCreate,
     AdminEventOut,
     AdminEventUpdate,
+    BulkDeleteEventsResult,
     BulkEventsImportRequest,
     BulkEventsImportResponse,
     BulkImportError,
@@ -235,6 +236,43 @@ def bulk_import_events(
         skipped_conflict=skipped_conflict,
         errors=errors,
     )
+
+
+@router.delete(
+    "/conferences/{conference_id}/events",
+    response_model=BulkDeleteEventsResult,
+)
+def delete_all_conference_events(
+    conference_id: str,
+    admin: Annotated[CurrentUser, Depends(require_admin)],
+    repo: Annotated[EventsAdminRepo, Depends(get_events_admin_repo)],
+    catalog: Annotated[CatalogRepo, Depends(get_catalog_repo)],
+    include_locked: bool = False,
+) -> BulkDeleteEventsResult:
+    """Delete every event under a conference.
+
+    Locked rows are preserved by default — admin must unlock them first, or
+    pass include_locked=true to wipe everything. Returns counts so the UI
+    can show 'deleted N, skipped M locked'.
+    """
+    if catalog.get_conference(conference_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"conference '{conference_id}' not found",
+        )
+    deleted, skipped_locked = repo.delete_events_for_conference(
+        conference_id, include_locked=include_locked
+    )
+    logger.info(
+        "admin.delete_all_conference_events conference=%s include_locked=%s "
+        "deleted=%d skipped_locked=%d by=%s",
+        conference_id,
+        include_locked,
+        deleted,
+        skipped_locked,
+        admin.id,
+    )
+    return BulkDeleteEventsResult(deleted=deleted, skipped_locked=skipped_locked)
 
 
 @router.post("/events/{event_id}/lock", response_model=AdminEventOut)

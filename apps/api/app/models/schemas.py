@@ -284,6 +284,13 @@ class BulkEventsImportResponse(BaseModel):
     errors: list[BulkImportError] = Field(default_factory=list)
 
 
+class BulkDeleteEventsResult(BaseModel):
+    """Returned by DELETE /api/admin/conferences/{id}/events."""
+
+    deleted: int
+    skipped_locked: int
+
+
 class AdminConferenceDay(BaseModel):
     day_num: int
     dow: str

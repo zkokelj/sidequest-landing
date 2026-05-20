@@ -211,6 +211,22 @@ export function deleteAdminEvent(id: string): Promise<void> {
   })
 }
 
+export type BulkDeleteEventsResult = {
+  deleted: number
+  skipped_locked: number
+}
+
+export function deleteAllConferenceEvents(
+  conferenceId: string,
+  opts: { includeLocked?: boolean } = {},
+): Promise<BulkDeleteEventsResult> {
+  const qs = opts.includeLocked ? '?include_locked=true' : ''
+  return apiFetch<BulkDeleteEventsResult>(
+    `/api/admin/conferences/${encodeURIComponent(conferenceId)}/events${qs}`,
+    { method: 'DELETE' },
+  )
+}
+
 export function setAdminEventLock(id: string, locked: boolean): Promise<AdminEvent> {
   return apiFetch<AdminEvent>(`/api/admin/events/${encodeURIComponent(id)}/lock`, {
     method: 'POST',
