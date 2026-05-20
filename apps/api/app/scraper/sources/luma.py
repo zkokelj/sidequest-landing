@@ -104,6 +104,44 @@ def _inline_text(nodes: list[dict[str, Any]] | None) -> str:
     return "".join(n.get("text", "") for n in nodes if n.get("type") == "text")
 
 
+def _extract_tags(details: dict[str, Any]) -> list[str]:
+    """Pull tag slugs out of Luma's `categories` array on /event/get.
+
+    Preserves order and dedupes case-insensitively, since admins later filter
+    on these and a tags array with both 'crypto' and 'Crypto' is annoying.
+    """
+    categories = details.get("categories") or []
+    seen: set[str] = set()
+    out: list[str] = []
+    for cat in categories:
+        slug = (cat.get("slug") or "").strip().lower()
+        if slug and slug not in seen:
+            seen.add(slug)
+            out.append(slug)
+    return out
+
+
+def _resolve_venue(event: dict[str, Any]) -> str | None:
+    """Pick the best human-readable venue for a Luma event.
+
+    Many Luma events hide the full address until RSVP — geo_address_info
+    then carries only city_state ("Milano, Italy"). Fall through:
+      full_address → address → city_state → "Online" (virtual) → None
+    so the schedule UI shows *something* instead of an empty cell.
+    """
+    geo = event.get("geo_address_info") or {}
+    for key in ("full_address", "address", "city_state"):
+        value = geo.get(key)
+        if value:
+            return value
+    legacy = event.get("venue")
+    if legacy:
+        return legacy
+    if (event.get("location_type") or "").lower() in ("virtual", "online", "zoom"):
+        return "Online"
+    return None
+
+
 # ---------- scraper ----------
 
 
@@ -259,19 +297,24 @@ def normalize_event(
         )
         return None
 
-    geo = event.get("geo_address_info") or {}
-    venue = geo.get("full_address") or geo.get("address") or event.get("venue")
+    venue = _resolve_venue(event)
 
     url = f"{LUMA_WEB_BASE}/{event['url']}" if event.get("url") else None
 
     description: str | None = None
     capacity: int | None = None
     attendees: int | None = None
+    tags: list[str] = []
+    tint_color: str | None = None
     if details:
         desc_mirror = details.get("description_mirror") or {}
         description = extract_text_from_description(desc_mirror.get("content")) or None
         capacity = details.get("capacity")
         attendees = details.get("guest_count")
+        tags = _extract_tags(details)
+        tint_color = details.get("tint_color") or None
+
+    cover_url = event.get("cover_url") or None
 
     return {
         "id": f"luma:{api_id}",
@@ -281,10 +324,12 @@ def normalize_event(
         "starts_at": starts_at,
         "ends_at": ends_at,
         "venue": venue,
-        "tags": [],  # Luma has no rich tags; admins/curate fill these in later
+        "tags": tags,
         "url": url,
         "capacity": capacity,
         "attendees": attendees,
+        "cover_url": cover_url,
+        "tint_color": tint_color,
         "source": source or "luma",
         "raw": {"entry": entry, "details": details},
     }

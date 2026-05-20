@@ -21,6 +21,7 @@ from app.scraper.scheduler import Scheduler, build_scheduler
 from app.services.admin_repo import get_events_admin_repo
 from app.services.scheduler_settings_repo import get_scheduler_settings_repo
 from app.services.scrape_sources_repo import get_scrape_sources_repo
+from app.services.suggestions_repo import get_suggestions_repo
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ async def lifespan(app: FastAPI):
         sources_repo=get_scrape_sources_repo(),
         events_repo=get_events_admin_repo(),
         settings_repo=get_scheduler_settings_repo(),
+        suggestions_repo=get_suggestions_repo(),
     )
     await scheduler.start()
     try:

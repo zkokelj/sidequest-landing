@@ -33,6 +33,8 @@ export type Event = {
   url?: string | null
   capacity?: number | null
   attendees?: number | null
+  cover_url?: string | null
+  tint_color?: string | null
   match?: number
   inSchedule?: boolean
 }

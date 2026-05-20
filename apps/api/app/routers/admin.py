@@ -26,6 +26,7 @@ from app.models.schemas import (
     ScrapeSourceUpdate,
 )
 from app.scraper.luma_runner import SourceScrapeStats, run_for_source
+from app.services.suggestions_repo import SuggestionsRepo, get_suggestions_repo
 from app.services.admin_repo import EventsAdminRepo, get_events_admin_repo
 from app.services.catalog import CatalogRepo, get_catalog_repo
 from app.services.scheduler_settings_repo import (
@@ -363,6 +364,7 @@ def trigger_scrape(
     admin: Annotated[CurrentUser, Depends(require_admin)],
     sources_repo: Annotated[ScrapeSourcesRepo, Depends(get_scrape_sources_repo)],
     events_repo: Annotated[EventsAdminRepo, Depends(get_events_admin_repo)],
+    suggestions_repo: Annotated[SuggestionsRepo, Depends(get_suggestions_repo)],
 ) -> ScrapeRunResult:
     """Run every enabled Luma source on this conference and upsert events.
 
@@ -393,6 +395,7 @@ def trigger_scrape(
                 conference_id=conference_id,
                 source_url=url,
                 events_repo=events_repo,
+                suggestions_repo=suggestions_repo,
             )
         except Exception as exc:
             logger.exception("admin.trigger_scrape source=%s failed", url)

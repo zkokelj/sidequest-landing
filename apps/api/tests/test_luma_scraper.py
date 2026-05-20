@@ -162,6 +162,77 @@ def test_normalize_event_missing_required_returns_none(caplog: pytest.LogCapture
     assert "skipped" in caplog.text
 
 
+def test_normalize_event_captures_cover_url_and_tint_color() -> None:
+    """Cover URL lives on the calendar entry; tint_color lives in /event/get."""
+    e = _entry()
+    e["event"]["cover_url"] = "https://images.lumacdn.com/event-covers/abc.jpg"
+    details = {"tint_color": "#146AEB"}
+    row = normalize_event(e, conference_id="c1", details=details)
+    assert row is not None
+    assert row["cover_url"] == "https://images.lumacdn.com/event-covers/abc.jpg"
+    assert row["tint_color"] == "#146AEB"
+
+
+def test_normalize_event_cover_and_tint_default_to_none() -> None:
+    row = normalize_event(_entry(), conference_id="c1")
+    assert row is not None
+    assert row["cover_url"] is None
+    assert row["tint_color"] is None
+
+
+def test_normalize_event_maps_categories_to_tags() -> None:
+    """Luma's /event/get returns categories[]; we lift the slugs into events.tags
+    so the schedule UI can filter on them."""
+    details = {
+        "categories": [
+            {"slug": "crypto", "name": "Crypto"},
+            {"slug": "ai", "name": "AI"},
+            # Duplicates with different cases should collapse.
+            {"slug": "Crypto", "name": "Crypto"},
+            {"slug": "", "name": "Empty"},
+            {"name": "no-slug"},
+        ]
+    }
+    row = normalize_event(_entry(), conference_id="c1", details=details)
+    assert row is not None
+    assert row["tags"] == ["crypto", "ai"]
+
+
+def test_normalize_event_tags_empty_when_no_categories() -> None:
+    row = normalize_event(_entry(), conference_id="c1", details={"categories": []})
+    assert row is not None
+    assert row["tags"] == []
+
+
+def test_normalize_event_venue_falls_back_to_city_state_when_address_hidden() -> None:
+    """Many Luma events expose only city_state until the user RSVPs. The old
+    code returned None; we now return 'Milano, Italy' so the UI has something
+    to show."""
+    e = _entry()
+    e["event"]["geo_address_info"] = {"city_state": "Milano, Italy"}
+    row = normalize_event(e, conference_id="c1")
+    assert row is not None
+    assert row["venue"] == "Milano, Italy"
+
+
+def test_normalize_event_venue_falls_back_to_online_for_virtual_events() -> None:
+    e = _entry()
+    e["event"]["geo_address_info"] = {}
+    e["event"]["location_type"] = "virtual"
+    row = normalize_event(e, conference_id="c1")
+    assert row is not None
+    assert row["venue"] == "Online"
+
+
+def test_normalize_event_venue_none_when_nothing_resolves() -> None:
+    e = _entry()
+    e["event"]["geo_address_info"] = {}
+    e["event"].pop("venue", None)
+    row = normalize_event(e, conference_id="c1")
+    assert row is not None
+    assert row["venue"] is None
+
+
 def test_normalize_event_no_end_at_falls_back_to_start() -> None:
     e = _entry()
     e["event"]["end_at"] = None

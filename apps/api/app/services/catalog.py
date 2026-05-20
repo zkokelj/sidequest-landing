@@ -63,6 +63,8 @@ class InMemoryCatalogRepo:
                 url=e.get("url"),
                 capacity=e.get("capacity"),
                 attendees=e.get("attendees"),
+                cover_url=e.get("cover_url"),
+                tint_color=e.get("tint_color"),
             )
             for e in seed_data.EVENTS
             if e["conference_id"] == conference_id
@@ -120,7 +122,8 @@ class SupabaseCatalogRepo:
         rows = (
             self._client.table("events")
             .select(
-                "id,conference_id,title,description,starts_at,ends_at,venue,tags,url,capacity,attendees"
+                "id,conference_id,title,description,starts_at,ends_at,venue,tags,url,"
+                "capacity,attendees,cover_url,tint_color"
             )
             .eq("conference_id", conference_id)
             .order("starts_at")
@@ -141,6 +144,8 @@ class SupabaseCatalogRepo:
                 url=r.get("url"),
                 capacity=r.get("capacity"),
                 attendees=r.get("attendees"),
+                cover_url=r.get("cover_url"),
+                tint_color=r.get("tint_color"),
             )
             for r in rows
         ]

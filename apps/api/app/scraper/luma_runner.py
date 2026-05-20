@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.scraper.sources.luma import LUMA_WEB_BASE, LumaScraper, normalize_event
 from app.services.admin_repo import EventsAdminRepo
+from app.services.suggestions_repo import SuggestionsRepo
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +37,53 @@ def _entry_url(event: dict[str, Any]) -> str | None:
     return f"{LUMA_WEB_BASE}/{slug}" if slug else None
 
 
+def _capture_people(
+    details: dict[str, Any],
+    *,
+    conference_id: str,
+    source_event_id: str,
+    suggestions_repo: SuggestionsRepo,
+) -> int:
+    """Lift Luma hosts + featured_guests into conference_suggestions.
+
+    Returns the number of new rows actually inserted (repeat names from
+    other events upsert no-ops, so the count reflects net-new people).
+    """
+    added = 0
+    for host in details.get("hosts") or []:
+        name = (host.get("name") or "").strip()
+        if not name:
+            continue
+        role = (host.get("bio_short") or "").strip() or None
+        if suggestions_repo.upsert_luma_person(
+            conference_id=conference_id,
+            name=name,
+            role=role,
+            source_event_id=source_event_id,
+        ):
+            added += 1
+    for guest in details.get("featured_guests") or []:
+        name = (guest.get("name") or "").strip()
+        if not name:
+            continue
+        role = (guest.get("bio_short") or "").strip() or None
+        if suggestions_repo.upsert_luma_person(
+            conference_id=conference_id,
+            name=name,
+            role=role,
+            source_event_id=source_event_id,
+        ):
+            added += 1
+    return added
+
+
 @dataclass
 class SourceScrapeStats:
     events_added: int = 0
     events_updated: int = 0
     events_skipped_locked: int = 0
     events_failed: int = 0
+    suggestions_added: int = 0
     failed_events: list[FailedEvent] = field(default_factory=list)
 
     def merge(self, other: SourceScrapeStats) -> None:
@@ -48,6 +91,7 @@ class SourceScrapeStats:
         self.events_updated += other.events_updated
         self.events_skipped_locked += other.events_skipped_locked
         self.events_failed += other.events_failed
+        self.suggestions_added += other.suggestions_added
         self.failed_events.extend(other.failed_events)
 
 
@@ -56,8 +100,9 @@ def run_for_source(
     conference_id: str,
     source_url: str,
     events_repo: EventsAdminRepo,
+    suggestions_repo: SuggestionsRepo | None = None,
     scraper: LumaScraper | None = None,
-    fetch_details: bool = False,
+    fetch_details: bool = True,
     max_pages: int | None = None,
 ) -> SourceScrapeStats:
     """Scrape one Luma source and upsert events into `events_repo`.
@@ -66,12 +111,16 @@ def run_for_source(
         conference_id: SideQuest conference to attach events to.
         source_url: Full Luma URL (or bare slug). Stored as `events.source`.
         events_repo: Repo to upsert into. Tests inject the in-memory backend.
+        suggestions_repo: Optional. When provided, hosts + featured_guests
+            from each event's /event/get response are upserted into
+            conference_suggestions with source='luma'. Requires
+            fetch_details=True to have anything to lift.
         scraper: Optional pre-built scraper (used by tests with MockTransport).
             When None, a fresh LumaScraper is built and disposed.
-        fetch_details: When True, also call `/event/get` for each entry to
-            populate description/capacity/attendees. Costs N extra HTTP
-            requests, so default off — admin can opt in for slow but rich
-            re-scrapes.
+        fetch_details: When True (default), also call `/event/get` for each
+            entry to populate description/capacity/attendees. Costs N extra
+            HTTP requests but the calendar listing alone doesn't carry rich
+            data — callers can disable for cheap "what's new?" sweeps.
         max_pages: Cap on calendar pagination (None = walk to end).
 
     Returns:
@@ -131,6 +180,21 @@ def run_for_source(
                 stats.events_updated += 1
             else:
                 stats.events_added += 1
+
+            # Suggestions are best-effort — a failure here must not break
+            # the event upsert that already succeeded above.
+            if suggestions_repo is not None and details:
+                try:
+                    stats.suggestions_added += _capture_people(
+                        details,
+                        conference_id=conference_id,
+                        source_event_id=row["id"],
+                        suggestions_repo=suggestions_repo,
+                    )
+                except Exception:
+                    logger.exception(
+                        "luma_runner.suggestions_failed event_id=%s", row["id"]
+                    )
         except Exception as exc:
             logger.exception("luma_runner.event_failed source_url=%s", source_url)
             stats.events_failed += 1
@@ -145,11 +209,13 @@ def run_for_source(
             )
 
     logger.info(
-        "luma_runner.done source_url=%s added=%d updated=%d skipped_locked=%d failed=%d",
+        "luma_runner.done source_url=%s added=%d updated=%d skipped_locked=%d "
+        "failed=%d suggestions_added=%d",
         source_url,
         stats.events_added,
         stats.events_updated,
         stats.events_skipped_locked,
         stats.events_failed,
+        stats.suggestions_added,
     )
     return stats
