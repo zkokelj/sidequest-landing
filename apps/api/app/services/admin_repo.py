@@ -14,7 +14,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from functools import lru_cache
 from threading import RLock
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
+
+
+ImportOutcome = Literal["inserted", "updated", "skipped_locked", "skipped_conflict"]
 
 from app.config import Settings, get_settings
 
@@ -61,6 +64,20 @@ class EventsAdminRepo(Protocol):
             True  — row inserted or updated
             False — row exists and locked=true; scraper must not touch it
         """
+        ...
+
+    def import_event(
+        self,
+        event: dict[str, Any],
+        *,
+        updated_by: str,
+        on_conflict: Literal["upsert", "skip"],
+    ) -> ImportOutcome:
+        """Apply one bulk-import row. New rows are inserted as
+        is_manual=True, locked=True (admin-authored). Existing locked rows
+        are never overwritten — admin must unlock them via the events UI
+        first. Existing unlocked rows are overwritten when on_conflict is
+        'upsert', skipped when 'skip'."""
         ...
 
     def upsert_conference(self, fields: dict[str, Any]) -> dict[str, Any]: ...
@@ -175,6 +192,39 @@ class InMemoryEventsAdminRepo:
                 existing["updated_at"] = now
             return True
 
+    def import_event(
+        self,
+        event: dict[str, Any],
+        *,
+        updated_by: str,
+        on_conflict: Literal["upsert", "skip"],
+    ) -> ImportOutcome:
+        # Bulk imports stay unlocked so re-running the same JSON (e.g. a
+        # scraper agent re-emitting a corrected file) updates cleanly. Admin
+        # can lock individual rows via /events/{id}/lock to protect them.
+        with self._lock:
+            existing = self._rows.get(event["id"])
+            now = datetime.now(timezone.utc)
+            if existing is None:
+                self._rows[event["id"]] = {
+                    **event,
+                    "is_manual": True,
+                    "locked": False,
+                    "updated_by": updated_by,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                return "inserted"
+            if existing.get("locked"):
+                return "skipped_locked"
+            if on_conflict == "skip":
+                return "skipped_conflict"
+            existing.update(event)
+            existing["is_manual"] = True
+            existing["updated_by"] = updated_by
+            existing["updated_at"] = now
+            return "updated"
+
     def upsert_conference(self, fields: dict[str, Any]) -> dict[str, Any]:
         # InMemory backend doesn't model conferences separately; pretend it worked.
         return dict(fields)
@@ -275,6 +325,32 @@ class SupabaseEventsAdminRepo:
                 "locked", False
             ).execute()
         return True
+
+    def import_event(
+        self,
+        event: dict[str, Any],
+        *,
+        updated_by: str,
+        on_conflict: Literal["upsert", "skip"],
+    ) -> ImportOutcome:
+        existing = self.get_event(event["id"])
+        if existing is None:
+            payload = {
+                **event,
+                "is_manual": True,
+                "locked": False,
+                "updated_by": updated_by,
+                "source": event.get("source") or "bulk_import",
+            }
+            self._client.table("events").insert(payload).execute()
+            return "inserted"
+        if existing.get("locked"):
+            return "skipped_locked"
+        if on_conflict == "skip":
+            return "skipped_conflict"
+        payload = {**event, "is_manual": True, "updated_by": updated_by}
+        self._client.table("events").update(payload).eq("id", event["id"]).execute()
+        return "updated"
 
     def upsert_conference(self, fields: dict[str, Any]) -> dict[str, Any]:
         from datetime import date, timedelta

@@ -218,6 +218,53 @@ export function setAdminEventLock(id: string, locked: boolean): Promise<AdminEve
   })
 }
 
+// ---------- bulk import ----------
+
+export type BulkEventInput = {
+  id?: string | null
+  title: string
+  description?: string | null
+  starts_at: string
+  ends_at: string
+  venue?: string | null
+  tags?: string[]
+  url?: string | null
+  capacity?: number | null
+  attendees?: number | null
+}
+
+export type BulkEventsImportRequest = {
+  conference_id: string
+  on_conflict?: 'upsert' | 'skip'
+  events: BulkEventInput[]
+}
+
+export type BulkImportError = {
+  index: number
+  id: string | null
+  message: string
+}
+
+export type BulkEventsImportResponse = {
+  dry_run: boolean
+  inserted: number
+  updated: number
+  skipped_locked: number
+  skipped_conflict: number
+  errors: BulkImportError[]
+}
+
+export function bulkImportEvents(
+  body: BulkEventsImportRequest,
+  opts: { dryRun?: boolean } = {},
+): Promise<BulkEventsImportResponse> {
+  const qs = opts.dryRun ? '?dry_run=true' : ''
+  return apiFetch<BulkEventsImportResponse>(`/api/admin/events/bulk${qs}`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
 // ---------- conferences ----------
 
 export function upsertAdminConference(body: AdminConferenceUpsert) {

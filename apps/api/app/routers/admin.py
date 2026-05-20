@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Annotated, Any
 
@@ -12,6 +13,9 @@ from app.models.schemas import (
     AdminEventCreate,
     AdminEventOut,
     AdminEventUpdate,
+    BulkEventsImportRequest,
+    BulkEventsImportResponse,
+    BulkImportError,
     ConferenceOut,
     LockRequest,
     SchedulerSettingsOut,
@@ -121,6 +125,115 @@ def delete_event(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"event '{event_id}' not found",
         )
+
+
+def _derive_event_id(conference_id: str, title: str, starts_at_iso: str) -> str:
+    """Stable hash so re-importing the same JSON updates rather than duplicates."""
+    digest = hashlib.sha1(
+        f"{title}|{starts_at_iso}".encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:16]
+    return f"import:{conference_id}:{digest}"
+
+
+@router.post("/events/bulk", response_model=BulkEventsImportResponse)
+def bulk_import_events(
+    body: BulkEventsImportRequest,
+    admin: Annotated[CurrentUser, Depends(require_admin)],
+    repo: Annotated[EventsAdminRepo, Depends(get_events_admin_repo)],
+    catalog: Annotated[CatalogRepo, Depends(get_catalog_repo)],
+    dry_run: bool = False,
+) -> BulkEventsImportResponse:
+    """Bulk-import events for one conference from a JSON payload.
+
+    Per-row validation: an error on one row never blocks the others.
+    Locked existing rows are always skipped (admin must unlock first).
+    Stable IDs let agents emit deterministic JSON and re-run safely.
+    """
+    if catalog.get_conference(body.conference_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"conference '{body.conference_id}' not found",
+        )
+
+    inserted = updated = skipped_locked = skipped_conflict = 0
+    errors: list[BulkImportError] = []
+    seen_ids: set[str] = set()
+
+    for i, ev in enumerate(body.events):
+        try:
+            if ev.ends_at <= ev.starts_at:
+                raise ValueError("ends_at must be after starts_at")
+
+            starts_iso = ev.starts_at.isoformat()
+            ends_iso = ev.ends_at.isoformat()
+            event_id = ev.id or _derive_event_id(body.conference_id, ev.title, starts_iso)
+
+            if event_id in seen_ids:
+                raise ValueError(f"duplicate id within payload: '{event_id}'")
+            seen_ids.add(event_id)
+
+            fields = {
+                "id": event_id,
+                "conference_id": body.conference_id,
+                "title": ev.title,
+                "description": ev.description,
+                "starts_at": starts_iso,
+                "ends_at": ends_iso,
+                "venue": ev.venue,
+                "tags": ev.tags,
+                "url": ev.url,
+                "capacity": ev.capacity,
+                "attendees": ev.attendees,
+            }
+
+            if dry_run:
+                existing = repo.get_event(event_id)
+                if existing is None:
+                    outcome = "inserted"
+                elif existing.get("locked"):
+                    outcome = "skipped_locked"
+                elif body.on_conflict == "skip":
+                    outcome = "skipped_conflict"
+                else:
+                    outcome = "updated"
+            else:
+                outcome = repo.import_event(
+                    fields, updated_by=admin.id, on_conflict=body.on_conflict
+                )
+
+            if outcome == "inserted":
+                inserted += 1
+            elif outcome == "updated":
+                updated += 1
+            elif outcome == "skipped_locked":
+                skipped_locked += 1
+            elif outcome == "skipped_conflict":
+                skipped_conflict += 1
+        except Exception as exc:
+            errors.append(
+                BulkImportError(index=i, id=ev.id, message=str(exc)[:300])
+            )
+
+    logger.info(
+        "admin.bulk_import conference=%s dry_run=%s inserted=%d updated=%d "
+        "skipped_locked=%d skipped_conflict=%d errors=%d",
+        body.conference_id,
+        dry_run,
+        inserted,
+        updated,
+        skipped_locked,
+        skipped_conflict,
+        len(errors),
+    )
+
+    return BulkEventsImportResponse(
+        dry_run=dry_run,
+        inserted=inserted,
+        updated=updated,
+        skipped_locked=skipped_locked,
+        skipped_conflict=skipped_conflict,
+        errors=errors,
+    )
 
 
 @router.post("/events/{event_id}/lock", response_model=AdminEventOut)
