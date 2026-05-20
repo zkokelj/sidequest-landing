@@ -52,10 +52,11 @@ def _clear() -> None:
     app.dependency_overrides.pop(get_catalog_repo, None)
 
 
-def test_public_suggestions_returns_all_for_conference() -> None:
+def test_public_suggestions_excludes_luma_by_default() -> None:
+    # Mix of luma + llm — public endpoint should hide luma noise.
     _setup(
         seed=[
-            {"name": "Stani Kulechov", "role": "Aave"},
+            {"name": "Stani Kulechov", "role": "Aave"},  # luma (default)
             {"name": "Vitalik Buterin", "role": "Ethereum", "via": "llm"},
         ]
     )
@@ -64,18 +65,37 @@ def test_public_suggestions_returns_all_for_conference() -> None:
         resp = client.get(f"/api/conferences/{CONF_ID}/suggestions")
         assert resp.status_code == 200
         data = resp.json()
-        assert {p["name"] for p in data} == {"Stani Kulechov", "Vitalik Buterin"}
-        # Kind is always 'people' for what we seeded
-        assert all(p["kind"] == "people" for p in data)
+        # Only the LLM-curated row surfaces; Luma is hidden noise.
+        assert {p["name"] for p in data} == {"Vitalik Buterin"}
+    finally:
+        _clear()
+
+
+def test_public_suggestions_include_luma_opt_in() -> None:
+    _setup(
+        seed=[
+            {"name": "Stani Kulechov"},  # luma
+            {"name": "Vitalik Buterin", "via": "llm"},
+        ]
+    )
+    try:
+        client = TestClient(app)
+        # With include_luma=true, raw Luma rows are returned alongside LLM ones.
+        resp = client.get(
+            f"/api/conferences/{CONF_ID}/suggestions?include_luma=true"
+        )
+        assert resp.status_code == 200
+        names = {p["name"] for p in resp.json()}
+        assert names == {"Stani Kulechov", "Vitalik Buterin"}
     finally:
         _clear()
 
 
 def test_public_suggestions_filters_by_kind() -> None:
-    _setup(seed=[{"name": "Stani"}])
+    # Use an LLM row so the default Luma-exclusion doesn't hide it.
+    _setup(seed=[{"name": "Stani", "via": "llm"}])
     try:
         client = TestClient(app)
-        # Existing rows are kind='people'
         people = client.get(
             f"/api/conferences/{CONF_ID}/suggestions?kind=people"
         ).json()

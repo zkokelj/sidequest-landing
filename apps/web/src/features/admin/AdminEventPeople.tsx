@@ -9,6 +9,7 @@ import {
   listEventPeople,
   type AdminSuggestion,
 } from '../../api/admin'
+import { EditableSuggestionRow } from './EditableSuggestionRow'
 
 /**
  * "People on this event" — list current links, search/pick existing suggestions
@@ -104,29 +105,36 @@ export function AdminEventPeople(props: {
           </li>
         )}
         {peopleOnEventQ.data?.map((p) => (
-          <li key={p.suggestion_id} className="admin-sources__row">
-            <div className="admin-sources__row-main">
-              <div className="admin-sources__url">
-                {p.name}
-                {p.role && <span style={{ opacity: 0.7 }}> — {p.role}</span>}
-              </div>
-              <div className="admin-sources__meta">
+          <EditableSuggestionRow
+            key={p.suggestion_id}
+            person={{ id: p.suggestion_id, name: p.name, role: p.role }}
+            meta={
+              <>
                 via <strong>{p.link_source}</strong>
                 {p.confidence != null && (
                   <> · confidence: <strong>{p.confidence.toFixed(2)}</strong></>
                 )}
-              </div>
-            </div>
-            <button
-              type="button"
-              className="admin-btn admin-btn--icon admin-btn--danger"
-              title="Remove from this event"
-              onClick={() => detachMut.mutate(p.suggestion_id)}
-              disabled={detachMut.isPending}
-            >
-              <X size={14} />
-            </button>
-          </li>
+              </>
+            }
+            // Editing one person can affect both this event's view and the
+            // conference-wide picker.
+            invalidateKeys={[
+              ['admin', 'event-people', eventId],
+              ['admin', 'conf-people', conferenceId],
+              ['public', 'suggestions', conferenceId],
+            ]}
+            trailing={
+              <button
+                type="button"
+                className="admin-btn admin-btn--icon admin-btn--danger"
+                title="Remove from this event"
+                onClick={() => detachMut.mutate(p.suggestion_id)}
+                disabled={detachMut.isPending}
+              >
+                <X size={14} />
+              </button>
+            }
+          />
         ))}
       </ul>
 
