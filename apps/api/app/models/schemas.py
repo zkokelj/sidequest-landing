@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date as date_t, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -231,6 +231,45 @@ class AdminEventOut(BaseModel):
 
 class LockRequest(BaseModel):
     locked: bool
+
+
+class BulkEventInput(BaseModel):
+    """One event in a bulk-import payload. `id` is optional — when omitted the
+    server derives a stable hash from `title + starts_at` and prefixes with
+    `import:<conference_id>:`, so re-importing the same JSON updates rather
+    than duplicates."""
+
+    id: str | None = None
+    title: str
+    description: str | None = None
+    starts_at: datetime
+    ends_at: datetime
+    venue: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    url: str | None = None
+    capacity: int | None = None
+    attendees: int | None = None
+
+
+class BulkEventsImportRequest(BaseModel):
+    conference_id: str
+    on_conflict: Literal["upsert", "skip"] = "upsert"
+    events: list[BulkEventInput] = Field(default_factory=list, max_length=500)
+
+
+class BulkImportError(BaseModel):
+    index: int
+    id: str | None = None
+    message: str
+
+
+class BulkEventsImportResponse(BaseModel):
+    dry_run: bool
+    inserted: int
+    updated: int
+    skipped_locked: int
+    skipped_conflict: int
+    errors: list[BulkImportError] = Field(default_factory=list)
 
 
 class AdminConferenceDay(BaseModel):

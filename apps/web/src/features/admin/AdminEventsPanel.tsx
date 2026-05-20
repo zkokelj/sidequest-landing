@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Lock, Unlock, Wrench, Plus, Pencil, Trash2 } from 'lucide-react'
+import { Lock, Unlock, Upload, Wrench, Plus, Pencil, Trash2 } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import {
@@ -15,6 +15,7 @@ import {
 } from '../../api/admin'
 import { CONFERENCES } from '../../data/conferences'
 import { AdminEventForm, type EventFormMode } from './AdminEventForm'
+import { AdminEventsBulkImport } from './AdminEventsBulkImport'
 
 type LockFilter = 'all' | 'locked' | 'unlocked'
 type ManualFilter = 'all' | 'manual' | 'scraped'
@@ -37,6 +38,7 @@ export function AdminEventsPanel() {
   const [query, setQuery] = useState('')
   const [formMode, setFormMode] = useState<EventFormMode | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
+  const [bulkOpen, setBulkOpen] = useState<boolean>(false)
 
   const queryClient = useQueryClient()
 
@@ -165,6 +167,20 @@ export function AdminEventsPanel() {
 
         <button
           type="button"
+          className="admin-btn"
+          onClick={() => setBulkOpen(true)}
+          disabled={!conferenceId}
+          title={
+            conferenceId
+              ? 'Bulk-import events from JSON for the selected conference'
+              : 'Select a conference first'
+          }
+        >
+          <Upload size={14} /> Import JSON
+        </button>
+
+        <button
+          type="button"
           className="admin-btn admin-btn--primary"
           onClick={() => {
             setFormError(null)
@@ -272,6 +288,17 @@ export function AdminEventsPanel() {
           }}
           onSubmitCreate={(body) => createMut.mutate(body)}
           onSubmitEdit={(id, patch) => updateMut.mutate({ id, patch })}
+        />
+      )}
+
+      {bulkOpen && (
+        <AdminEventsBulkImport
+          conferenceId={conferenceId}
+          conferenceName={
+            conferences.find((c) => c.id === conferenceId)?.name ?? conferenceId
+          }
+          onClose={() => setBulkOpen(false)}
+          onApplied={invalidate}
         />
       )}
     </div>
