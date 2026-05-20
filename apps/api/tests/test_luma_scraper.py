@@ -162,6 +162,30 @@ def test_normalize_event_missing_required_returns_none(caplog: pytest.LogCapture
     assert "skipped" in caplog.text
 
 
+def test_normalize_event_maps_categories_to_tags() -> None:
+    """Luma's /event/get returns categories[]; we lift the slugs into events.tags
+    so the schedule UI can filter on them."""
+    details = {
+        "categories": [
+            {"slug": "crypto", "name": "Crypto"},
+            {"slug": "ai", "name": "AI"},
+            # Duplicates with different cases should collapse.
+            {"slug": "Crypto", "name": "Crypto"},
+            {"slug": "", "name": "Empty"},
+            {"name": "no-slug"},
+        ]
+    }
+    row = normalize_event(_entry(), conference_id="c1", details=details)
+    assert row is not None
+    assert row["tags"] == ["crypto", "ai"]
+
+
+def test_normalize_event_tags_empty_when_no_categories() -> None:
+    row = normalize_event(_entry(), conference_id="c1", details={"categories": []})
+    assert row is not None
+    assert row["tags"] == []
+
+
 def test_normalize_event_venue_falls_back_to_city_state_when_address_hidden() -> None:
     """Many Luma events expose only city_state until the user RSVPs. The old
     code returned None; we now return 'Milano, Italy' so the UI has something

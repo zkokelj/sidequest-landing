@@ -104,6 +104,23 @@ def _inline_text(nodes: list[dict[str, Any]] | None) -> str:
     return "".join(n.get("text", "") for n in nodes if n.get("type") == "text")
 
 
+def _extract_tags(details: dict[str, Any]) -> list[str]:
+    """Pull tag slugs out of Luma's `categories` array on /event/get.
+
+    Preserves order and dedupes case-insensitively, since admins later filter
+    on these and a tags array with both 'crypto' and 'Crypto' is annoying.
+    """
+    categories = details.get("categories") or []
+    seen: set[str] = set()
+    out: list[str] = []
+    for cat in categories:
+        slug = (cat.get("slug") or "").strip().lower()
+        if slug and slug not in seen:
+            seen.add(slug)
+            out.append(slug)
+    return out
+
+
 def _resolve_venue(event: dict[str, Any]) -> str | None:
     """Pick the best human-readable venue for a Luma event.
 
@@ -287,11 +304,13 @@ def normalize_event(
     description: str | None = None
     capacity: int | None = None
     attendees: int | None = None
+    tags: list[str] = []
     if details:
         desc_mirror = details.get("description_mirror") or {}
         description = extract_text_from_description(desc_mirror.get("content")) or None
         capacity = details.get("capacity")
         attendees = details.get("guest_count")
+        tags = _extract_tags(details)
 
     return {
         "id": f"luma:{api_id}",
@@ -301,7 +320,7 @@ def normalize_event(
         "starts_at": starts_at,
         "ends_at": ends_at,
         "venue": venue,
-        "tags": [],  # Luma has no rich tags; admins/curate fill these in later
+        "tags": tags,
         "url": url,
         "capacity": capacity,
         "attendees": attendees,
