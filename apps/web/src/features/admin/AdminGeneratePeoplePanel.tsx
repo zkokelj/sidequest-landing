@@ -38,6 +38,13 @@ export function AdminGeneratePeoplePanel({ conferenceId }: { conferenceId: strin
     onSuccess: invalidateAll,
   })
 
+  // Luma rows are scraper-replaceable — no confirm needed, the next scrape
+  // recreates them. Useful for clearing noise after a bad scrape.
+  const deleteLumaMut = useMutation({
+    mutationFn: () => bulkDeleteConferenceSuggestions(conferenceId, 'luma'),
+    onSuccess: invalidateAll,
+  })
+
   // source='all' nukes Luma + manual + seed too. Behind a confirm() because
   // it's destructive and not what an admin clicking "Delete" usually wants.
   const deleteAllMut = useMutation({
@@ -129,7 +136,17 @@ export function AdminGeneratePeoplePanel({ conferenceId }: { conferenceId: strin
           title="Wipe LLM-generated rows so the next run starts clean"
         >
           <Trash2 size={14} />
-          {deleteLlmMut.isPending ? 'Deleting…' : 'Delete LLM people'}
+          {deleteLlmMut.isPending ? 'Deleting…' : `Delete LLM people (${counts.llm ?? 0})`}
+        </button>
+        <button
+          type="button"
+          className="admin-btn admin-btn--danger"
+          onClick={() => deleteLumaMut.mutate()}
+          disabled={deleteLumaMut.isPending || (counts.luma ?? 0) === 0}
+          title="Wipe Luma-scraped rows. The next scrape will recreate them."
+        >
+          <Trash2 size={14} />
+          {deleteLumaMut.isPending ? 'Deleting…' : `Delete Luma people (${counts.luma ?? 0})`}
         </button>
         <details>
           <summary
