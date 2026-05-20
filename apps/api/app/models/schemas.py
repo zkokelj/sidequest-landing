@@ -395,6 +395,21 @@ class EventPersonOut(BaseModel):
     confidence: float | None = None
 
 
+class AdminSuggestionPatch(BaseModel):
+    """PATCH /api/admin/suggestions/{id}. Both fields optional.
+
+    `name` cannot be empty — server rejects whitespace-only.
+    `role` accepts empty string to clear the field, or null/omitted to leave unchanged.
+    """
+
+    name: str | None = None
+    role: str | None = None
+
+
+class BulkDeleteSuggestionsResult(BaseModel):
+    deleted: int
+
+
 class EventPersonAttach(BaseModel):
     """Either attach an existing person by id, or create a new manual person
     from name+role and attach in one shot. Exactly one of the two must be set."""

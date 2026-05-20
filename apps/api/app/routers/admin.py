@@ -14,7 +14,9 @@ from app.models.schemas import (
     AdminEventOut,
     AdminEventUpdate,
     AdminSuggestionOut,
+    AdminSuggestionPatch,
     BulkDeleteEventsResult,
+    BulkDeleteSuggestionsResult,
     BulkEventsImportRequest,
     BulkEventsImportResponse,
     BulkImportError,
@@ -582,6 +584,90 @@ async def generate_people(
 # ============================================================================
 # Event-people: list/attach/detach (manual admin curation)
 # ============================================================================
+
+
+# Sources we allow callers to delete by — keep tight so a typo doesn't
+# accidentally wipe rows. 'all' is the magic value meaning "any source".
+_DELETABLE_SOURCES = {"llm", "manual", "luma", "seed", "all"}
+
+
+@router.delete(
+    "/conferences/{conference_id}/suggestions",
+    response_model=BulkDeleteSuggestionsResult,
+)
+def bulk_delete_conference_suggestions(
+    conference_id: str,
+    admin: Annotated[CurrentUser, Depends(require_admin)],
+    catalog: Annotated[CatalogRepo, Depends(get_catalog_repo)],
+    suggestions_repo: Annotated[SuggestionsRepo, Depends(get_suggestions_repo)],
+    source: str = "llm",
+) -> BulkDeleteSuggestionsResult:
+    """Wipe people for a conference. `source` defaults to 'llm' (the common
+    "delete and regenerate" workflow). Pass `source=all` to delete every row
+    regardless of source — including manually-curated entries.
+
+    FK cascade on event_suggestions automatically removes any event links
+    pointing at deleted suggestion rows. There is no soft-delete or undo.
+    """
+    if catalog.get_conference(conference_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"conference '{conference_id}' not found",
+        )
+    if source not in _DELETABLE_SOURCES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"source must be one of {sorted(_DELETABLE_SOURCES)}",
+        )
+    filter_source = None if source == "all" else source
+    deleted = suggestions_repo.delete_for_conference(
+        conference_id, source=filter_source
+    )
+    logger.info(
+        "admin.bulk_delete_suggestions conference=%s source=%s deleted=%d by=%s",
+        conference_id,
+        source,
+        deleted,
+        admin.id,
+    )
+    return BulkDeleteSuggestionsResult(deleted=deleted)
+
+
+@router.patch(
+    "/suggestions/{suggestion_id}",
+    response_model=AdminSuggestionOut,
+)
+def patch_suggestion(
+    suggestion_id: str,
+    body: AdminSuggestionPatch,
+    admin: Annotated[CurrentUser, Depends(require_admin)],
+    suggestions_repo: Annotated[SuggestionsRepo, Depends(get_suggestions_repo)],
+) -> AdminSuggestionOut:
+    """Edit a person's name/role. The id is immutable — even if you rename
+    `llm:stani-kulechov` to "Stan Kulechov", the row id stays the same so
+    existing event_suggestions links survive."""
+    # Validate name when provided — empty/whitespace is invalid.
+    if body.name is not None and not body.name.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="name cannot be empty",
+        )
+    row = suggestions_repo.update_fields(
+        suggestion_id,
+        name=body.name,
+        role=body.role,
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"suggestion '{suggestion_id}' not found",
+        )
+    logger.info(
+        "admin.patch_suggestion id=%s by=%s",
+        suggestion_id,
+        admin.id,
+    )
+    return AdminSuggestionOut.model_validate(row)
 
 
 @router.get(

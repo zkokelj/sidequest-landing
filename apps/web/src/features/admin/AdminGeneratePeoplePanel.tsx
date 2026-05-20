@@ -1,37 +1,71 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Sparkles } from 'lucide-react'
+import { Sparkles, Trash2 } from 'lucide-react'
 
 import {
+  bulkDeleteConferenceSuggestions,
   generateConferencePeople,
   listConferenceSuggestions,
   type GeneratePeopleResult,
 } from '../../api/admin'
+import { EditableSuggestionRow } from './EditableSuggestionRow'
 
 export function AdminGeneratePeoplePanel({ conferenceId }: { conferenceId: string }) {
   const queryClient = useQueryClient()
 
+  const peopleKey = ['admin', 'conf-people', conferenceId]
   const peopleQ = useQuery({
-    queryKey: ['admin', 'conf-people', conferenceId],
+    queryKey: peopleKey,
     queryFn: () => listConferenceSuggestions(conferenceId, { kind: 'people' }),
     enabled: !!conferenceId,
   })
 
+  const invalidateAll = () => {
+    queryClient.invalidateQueries({ queryKey: peopleKey })
+    // Public picker shares the underlying data — keep it fresh too.
+    queryClient.invalidateQueries({
+      queryKey: ['public', 'suggestions', conferenceId],
+    })
+  }
+
   const genMut = useMutation({
     mutationFn: () => generateConferencePeople(conferenceId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'conf-people', conferenceId] })
-    },
+    onSuccess: invalidateAll,
+  })
+
+  // Defaults to source='llm' — the common "wipe LLM rows and re-run" workflow.
+  const deleteLlmMut = useMutation({
+    mutationFn: () => bulkDeleteConferenceSuggestions(conferenceId, 'llm'),
+    onSuccess: invalidateAll,
+  })
+
+  // source='all' nukes Luma + manual + seed too. Behind a confirm() because
+  // it's destructive and not what an admin clicking "Delete" usually wants.
+  const deleteAllMut = useMutation({
+    mutationFn: () => bulkDeleteConferenceSuggestions(conferenceId, 'all'),
+    onSuccess: invalidateAll,
   })
 
   const result: GeneratePeopleResult | undefined = genMut.data
   const errMsg = (genMut.error as Error | null)?.message ?? null
 
-  // Counts by source so admins can see "Luma:5, LLM:12, manual:2" at a glance.
   const counts = (peopleQ.data ?? []).reduce<Record<string, number>>((acc, p) => {
     const k = p.source ?? 'unknown'
     acc[k] = (acc[k] ?? 0) + 1
     return acc
   }, {})
+
+  const onDeleteAll = () => {
+    const total = peopleQ.data?.length ?? 0
+    if (
+      !confirm(
+        `Delete ALL ${total} people (Luma + LLM + manual) for this conference?\n\n` +
+          `This also removes their event links. Cannot be undone.`,
+      )
+    ) {
+      return
+    }
+    deleteAllMut.mutate()
+  }
 
   if (!conferenceId) return null
 
@@ -78,6 +112,51 @@ export function AdminGeneratePeoplePanel({ conferenceId }: { conferenceId: strin
         ))}
       </div>
 
+      <div
+        style={{
+          display: 'flex',
+          gap: 8,
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          marginBottom: 8,
+        }}
+      >
+        <button
+          type="button"
+          className="admin-btn admin-btn--danger"
+          onClick={() => deleteLlmMut.mutate()}
+          disabled={deleteLlmMut.isPending || (counts.llm ?? 0) === 0}
+          title="Wipe LLM-generated rows so the next run starts clean"
+        >
+          <Trash2 size={14} />
+          {deleteLlmMut.isPending ? 'Deleting…' : 'Delete LLM people'}
+        </button>
+        <details>
+          <summary
+            style={{
+              cursor: 'pointer',
+              color: 'var(--fg-muted)',
+              fontSize: 12,
+              userSelect: 'none',
+            }}
+          >
+            Danger zone
+          </summary>
+          <div style={{ marginTop: 6 }}>
+            <button
+              type="button"
+              className="admin-btn admin-btn--danger"
+              onClick={onDeleteAll}
+              disabled={deleteAllMut.isPending || (peopleQ.data?.length ?? 0) === 0}
+              title="Delete every person on this conference, regardless of source"
+            >
+              <Trash2 size={14} />
+              {deleteAllMut.isPending ? 'Deleting…' : 'Delete ALL people'}
+            </button>
+          </div>
+        </details>
+      </div>
+
       <ul className="admin-sources__list">
         {peopleQ.isLoading && <li className="admin-sources__empty">Loading…</li>}
         {!peopleQ.isLoading && (peopleQ.data?.length ?? 0) === 0 && (
@@ -85,22 +164,21 @@ export function AdminGeneratePeoplePanel({ conferenceId }: { conferenceId: strin
             No people yet — run the generator or wait for the Luma scraper.
           </li>
         )}
-        {peopleQ.data?.slice(0, 30).map((p) => (
-          <li key={p.id} className="admin-sources__row">
-            <div className="admin-sources__row-main">
-              <div className="admin-sources__url">
-                {p.name}
-                {p.role && <span style={{ opacity: 0.7 }}> — {p.role}</span>}
-              </div>
-              <div className="admin-sources__meta">
+        {peopleQ.data?.slice(0, 50).map((p) => (
+          <EditableSuggestionRow
+            key={p.id}
+            person={{ id: p.id, name: p.name, role: p.role }}
+            meta={
+              <>
                 id: <code>{p.id}</code> · source: <strong>{p.source ?? '—'}</strong>
-              </div>
-            </div>
-          </li>
+              </>
+            }
+            invalidateKeys={[peopleKey, ['public', 'suggestions', conferenceId]]}
+          />
         ))}
-        {(peopleQ.data?.length ?? 0) > 30 && (
+        {(peopleQ.data?.length ?? 0) > 50 && (
           <li className="admin-sources__empty">
-            …showing 30 of {peopleQ.data?.length}.
+            …showing 50 of {peopleQ.data?.length}.
           </li>
         )}
       </ul>

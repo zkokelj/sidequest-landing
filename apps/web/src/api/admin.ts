@@ -255,6 +255,28 @@ export function detachEventPerson(
   )
 }
 
+export type BulkDeleteSuggestionsResult = { deleted: number }
+
+export function bulkDeleteConferenceSuggestions(
+  conferenceId: string,
+  source: 'llm' | 'manual' | 'luma' | 'seed' | 'all' = 'llm',
+): Promise<BulkDeleteSuggestionsResult> {
+  return apiFetch<BulkDeleteSuggestionsResult>(
+    `/api/admin/conferences/${encodeURIComponent(conferenceId)}/suggestions?source=${encodeURIComponent(source)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export function patchSuggestion(
+  suggestionId: string,
+  patch: { name?: string; role?: string | null },
+): Promise<AdminSuggestion> {
+  return apiFetch<AdminSuggestion>(
+    `/api/admin/suggestions/${encodeURIComponent(suggestionId)}`,
+    { method: 'PATCH', body: JSON.stringify(patch) },
+  )
+}
+
 // ---------- scheduler ----------
 
 export type SchedulerSettings = {

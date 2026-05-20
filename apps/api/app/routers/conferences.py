@@ -48,10 +48,16 @@ def list_conference_suggestions(
     repo: Annotated[CatalogRepo, Depends(get_catalog_repo)],
     suggestions_repo: Annotated[SuggestionsRepo, Depends(get_suggestions_repo)],
     kind: str | None = None,
+    include_luma: bool = False,
 ) -> list[SuggestionOut]:
     """People / companies / speakers curated for this conference. Used by the
     onboarding "mustHaves" step to populate the picker. `kind` is the filter
-    the UI is showing right now (`people`, `companies`, `speakers`)."""
+    the UI is showing right now (`people`, `companies`, `speakers`).
+
+    By default raw Luma-scraped rows are excluded — they're useful as input
+    to the LLM (the generate-people endpoint reads them as `known_people`) but
+    too noisy for the public picker (handles like "Berko", "Cocktail", etc.).
+    Pass `include_luma=true` for admin debugging / inspection."""
     if repo.get_conference(conference_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="conference not found")
     if kind is not None and kind not in VALID_KINDS:
@@ -62,4 +68,6 @@ def list_conference_suggestions(
     rows = suggestions_repo.list_for_conference(conference_id)
     if kind is not None:
         rows = [r for r in rows if r.get("kind") == kind]
+    if not include_luma:
+        rows = [r for r in rows if r.get("source") != "luma"]
     return [SuggestionOut.model_validate(r) for r in rows]

@@ -67,6 +67,29 @@ class SuggestionsRepo(Protocol):
         self, suggestion_id: str
     ) -> dict[str, Any] | None: ...
 
+    def update_fields(
+        self,
+        suggestion_id: str,
+        *,
+        name: str | None = None,
+        role: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Patch name/role. Pass None to leave unchanged; pass empty-string to
+        explicit-clear (role only — name is required). Returns the updated row
+        or None if the id doesn't exist."""
+        ...
+
+    def delete_for_conference(
+        self,
+        conference_id: str,
+        *,
+        source: str | None = None,
+    ) -> int:
+        """Bulk delete. `source` filters to rows with that source (e.g. 'llm'),
+        or None to delete every row for the conference. FK cascade clears
+        related event_suggestions rows. Returns count deleted."""
+        ...
+
 
 # ---------- in-memory ----------
 
@@ -169,6 +192,47 @@ class InMemorySuggestionsRepo:
                     "meta": {},
                 }
             return row_id
+
+    def update_fields(
+        self,
+        suggestion_id: str,
+        *,
+        name: str | None = None,
+        role: str | None = None,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._rows.get(suggestion_id)
+            if row is None:
+                return None
+            if name is not None:
+                stripped = name.strip()
+                if not stripped:
+                    # name is required — empty string is invalid. Caller
+                    # should validate; we silently ignore here.
+                    pass
+                else:
+                    row["name"] = stripped
+            if role is not None:
+                # Empty string clears the field; non-empty replaces it.
+                row["role"] = role.strip() or None
+            return dict(row)
+
+    def delete_for_conference(
+        self,
+        conference_id: str,
+        *,
+        source: str | None = None,
+    ) -> int:
+        with self._lock:
+            to_remove = [
+                rid
+                for rid, r in self._rows.items()
+                if r.get("conference_id") == conference_id
+                and (source is None or r.get("source") == source)
+            ]
+            for rid in to_remove:
+                del self._rows[rid]
+            return len(to_remove)
 
 
 # ---------- supabase ----------
@@ -285,6 +349,46 @@ class SupabaseSuggestionsRepo:
             ignore_duplicates=True,
         ).execute()
         return row_id
+
+    def update_fields(
+        self,
+        suggestion_id: str,
+        *,
+        name: str | None = None,
+        role: str | None = None,
+    ) -> dict[str, Any] | None:
+        patch: dict[str, Any] = {}
+        if name is not None and name.strip():
+            patch["name"] = name.strip()
+        if role is not None:
+            patch["role"] = role.strip() or None
+        if not patch:
+            # Nothing to change — return current row so the caller can echo.
+            return self.get_by_id(suggestion_id)
+        res = (
+            self._client.table("conference_suggestions")
+            .update(patch)
+            .eq("id", suggestion_id)
+            .execute()
+        )
+        rows = res.data or []
+        return rows[0] if rows else None
+
+    def delete_for_conference(
+        self,
+        conference_id: str,
+        *,
+        source: str | None = None,
+    ) -> int:
+        q = (
+            self._client.table("conference_suggestions")
+            .delete()
+            .eq("conference_id", conference_id)
+        )
+        if source is not None:
+            q = q.eq("source", source)
+        res = q.execute()
+        return len(res.data or [])
 
 
 # ---------- factory ----------
