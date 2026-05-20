@@ -52,9 +52,15 @@ def _build_handler(
     *,
     calendar_id: str = "cal_xyz",
     events_by_calendar: dict[str, list[dict[str, Any]]] | None = None,
+    details_by_api_id: dict[str, dict[str, Any]] | None = None,
 ) -> Any:
-    """Build a MockTransport handler that fakes Luma's API."""
+    """Build a MockTransport handler that fakes Luma's API.
+
+    `/event/get` returns an empty details object by default. Tests that care
+    about description/capacity/attendees pass `details_by_api_id`.
+    """
     events_by_calendar = events_by_calendar or {}
+    details_by_api_id = details_by_api_id or {}
 
     def handler(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/url":
@@ -70,6 +76,9 @@ def _build_handler(
             return httpx.Response(
                 200, json={"entries": entries, "has_more": False, "next_cursor": None}
             )
+        if req.url.path == "/event/get":
+            api_id = req.url.params.get("event_api_id", "")
+            return httpx.Response(200, json=details_by_api_id.get(api_id, {}))
         return httpx.Response(404)
 
     return handler
@@ -126,6 +135,45 @@ def test_run_for_source_first_run_adds_then_second_run_updates() -> None:
     assert second.events_added == 0
     assert second.events_updated == 2
     assert len(repo.list_events(conference_id="token2049")) == 2  # no dupes
+
+
+def test_run_for_source_fetches_details_by_default() -> None:
+    """Regression: the default scrape must call /event/get and populate
+    description/capacity/attendees. Was off by default before — events
+    scraped via the admin trigger arrived blank."""
+    handler = _build_handler(
+        events_by_calendar={"cal_xyz": [_event("e1", "Stable Summit", 9)]},
+        details_by_api_id={
+            "e1": {
+                "capacity": 320,
+                "guest_count": 280,
+                "description_mirror": {
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": "Top-tier stablecoin talks."}],
+                        }
+                    ]
+                },
+            }
+        },
+    )
+    repo = InMemoryEventsAdminRepo()
+
+    with _scraper_with(handler) as scraper:
+        stats = run_for_source(
+            conference_id="token2049",
+            source_url="https://lu.ma/token2049",
+            events_repo=repo,
+            scraper=scraper,
+        )
+
+    assert stats.events_added == 1
+    row = repo.get_event("luma:e1")
+    assert row is not None
+    assert row["description"] == "Top-tier stablecoin talks."
+    assert row["capacity"] == 320
+    assert row["attendees"] == 280
 
 
 def test_run_for_source_skips_locked_rows() -> None:

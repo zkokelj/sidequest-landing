@@ -57,7 +57,7 @@ def run_for_source(
     source_url: str,
     events_repo: EventsAdminRepo,
     scraper: LumaScraper | None = None,
-    fetch_details: bool = False,
+    fetch_details: bool = True,
     max_pages: int | None = None,
 ) -> SourceScrapeStats:
     """Scrape one Luma source and upsert events into `events_repo`.
@@ -68,10 +68,10 @@ def run_for_source(
         events_repo: Repo to upsert into. Tests inject the in-memory backend.
         scraper: Optional pre-built scraper (used by tests with MockTransport).
             When None, a fresh LumaScraper is built and disposed.
-        fetch_details: When True, also call `/event/get` for each entry to
-            populate description/capacity/attendees. Costs N extra HTTP
-            requests, so default off — admin can opt in for slow but rich
-            re-scrapes.
+        fetch_details: When True (default), also call `/event/get` for each
+            entry to populate description/capacity/attendees. Costs N extra
+            HTTP requests but the calendar listing alone doesn't carry rich
+            data — callers can disable for cheap "what's new?" sweeps.
         max_pages: Cap on calendar pagination (None = walk to end).
 
     Returns:
