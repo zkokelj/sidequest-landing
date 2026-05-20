@@ -54,6 +54,17 @@ class EventsAdminRepo(Protocol):
 
     def delete_event(self, event_id: str) -> bool: ...
 
+    def delete_events_for_conference(
+        self, conference_id: str, *, include_locked: bool
+    ) -> tuple[int, int]:
+        """Bulk-delete every event under a conference.
+
+        Returns (deleted, skipped_locked). When include_locked is False,
+        rows with locked=true are left in place — admin must unlock them
+        first, mirroring the scraper-skip contract.
+        """
+        ...
+
     def set_lock(
         self, event_id: str, *, locked: bool, updated_by: str
     ) -> dict[str, Any] | None: ...
@@ -160,6 +171,23 @@ class InMemoryEventsAdminRepo:
     def delete_event(self, event_id: str) -> bool:
         with self._lock:
             return self._rows.pop(event_id, None) is not None
+
+    def delete_events_for_conference(
+        self, conference_id: str, *, include_locked: bool
+    ) -> tuple[int, int]:
+        with self._lock:
+            to_delete: list[str] = []
+            skipped_locked = 0
+            for eid, row in self._rows.items():
+                if row.get("conference_id") != conference_id:
+                    continue
+                if not include_locked and row.get("locked"):
+                    skipped_locked += 1
+                    continue
+                to_delete.append(eid)
+            for eid in to_delete:
+                del self._rows[eid]
+            return len(to_delete), skipped_locked
 
     def set_lock(
         self, event_id: str, *, locked: bool, updated_by: str
@@ -293,6 +321,29 @@ class SupabaseEventsAdminRepo:
     def delete_event(self, event_id: str) -> bool:
         res = self._client.table("events").delete().eq("id", event_id).execute()
         return bool(res.data)
+
+    def delete_events_for_conference(
+        self, conference_id: str, *, include_locked: bool
+    ) -> tuple[int, int]:
+        skipped_locked = 0
+        if not include_locked:
+            # Count locked rows up front so we can report them. Cheap — same
+            # table, same conference filter, count-only.
+            locked_res = (
+                self._client.table("events")
+                .select("id", count="exact")
+                .eq("conference_id", conference_id)
+                .eq("locked", True)
+                .execute()
+            )
+            skipped_locked = locked_res.count or 0
+
+        q = self._client.table("events").delete().eq("conference_id", conference_id)
+        if not include_locked:
+            q = q.eq("locked", False)
+        res = q.execute()
+        deleted = len(res.data or [])
+        return deleted, skipped_locked
 
     def set_lock(
         self, event_id: str, *, locked: bool, updated_by: str

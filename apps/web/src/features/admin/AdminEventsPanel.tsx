@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   createAdminEvent,
   deleteAdminEvent,
+  deleteAllConferenceEvents,
   listAdminEvents,
   listAllConferences,
   setAdminEventLock,
@@ -97,6 +98,12 @@ export function AdminEventsPanel() {
     onSuccess: invalidate,
   })
 
+  const deleteAllMut = useMutation({
+    mutationFn: (vars: { conferenceId: string; includeLocked: boolean }) =>
+      deleteAllConferenceEvents(vars.conferenceId, { includeLocked: vars.includeLocked }),
+    onSuccess: invalidate,
+  })
+
   const lockMut = useMutation({
     mutationFn: (vars: { id: string; locked: boolean }) =>
       setAdminEventLock(vars.id, vars.locked),
@@ -118,6 +125,49 @@ export function AdminEventsPanel() {
   const onDelete = (e: AdminEvent) => {
     if (!confirm(`Delete event "${e.title}" (${e.id})? This is permanent.`)) return
     deleteMut.mutate(e.id)
+  }
+
+  const onDeleteAll = async () => {
+    if (!conferenceId) return
+    const confName =
+      conferences.find((c) => c.id === conferenceId)?.name ?? conferenceId
+    const total = q.data?.length ?? 0
+    if (total === 0) {
+      alert(`No events to delete in "${confName}".`)
+      return
+    }
+    if (
+      !confirm(
+        `Delete every unlocked event in "${confName}"? Locked events stay. ` +
+          `This is permanent.`,
+      )
+    )
+      return
+    try {
+      const res = await deleteAllMut.mutateAsync({
+        conferenceId,
+        includeLocked: false,
+      })
+      if (res.skipped_locked > 0) {
+        const wipeMsg =
+          `Deleted ${res.deleted} event${res.deleted === 1 ? '' : 's'}. ` +
+          `${res.skipped_locked} locked event${res.skipped_locked === 1 ? ' was' : 's were'} ` +
+          `preserved.\n\nAlso delete the locked event${res.skipped_locked === 1 ? '' : 's'}?`
+        if (confirm(wipeMsg)) {
+          const res2 = await deleteAllMut.mutateAsync({
+            conferenceId,
+            includeLocked: true,
+          })
+          alert(
+            `Deleted ${res2.deleted} additional event${res2.deleted === 1 ? '' : 's'}.`,
+          )
+        }
+      } else {
+        alert(`Deleted ${res.deleted} event${res.deleted === 1 ? '' : 's'}.`)
+      }
+    } catch (err) {
+      alert(`Failed to delete: ${(err as Error).message}`)
+    }
   }
 
   return (
@@ -177,6 +227,20 @@ export function AdminEventsPanel() {
           }
         >
           <Upload size={14} /> Import JSON
+        </button>
+
+        <button
+          type="button"
+          className="admin-btn admin-btn--danger"
+          onClick={onDeleteAll}
+          disabled={!conferenceId || deleteAllMut.isPending}
+          title={
+            conferenceId
+              ? 'Delete every unlocked event in the selected conference'
+              : 'Select a conference first'
+          }
+        >
+          <Trash2 size={14} /> Delete all
         </button>
 
         <button
