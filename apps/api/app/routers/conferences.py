@@ -4,10 +4,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.models.schemas import ConferenceOut, EventOut
+from app.models.schemas import ConferenceOut, EventOut, SuggestionOut
 from app.services.catalog import CatalogRepo, get_catalog_repo
+from app.services.suggestions_repo import SuggestionsRepo, get_suggestions_repo
 
 router = APIRouter(prefix="/api/conferences", tags=["conferences"])
+
+VALID_KINDS = {"people", "companies", "speakers"}
 
 
 @router.get("", response_model=list[ConferenceOut])
@@ -37,3 +40,26 @@ def list_conference_events(
     if repo.get_conference(conference_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="conference not found")
     return repo.list_events(conference_id)
+
+
+@router.get("/{conference_id}/suggestions", response_model=list[SuggestionOut])
+def list_conference_suggestions(
+    conference_id: str,
+    repo: Annotated[CatalogRepo, Depends(get_catalog_repo)],
+    suggestions_repo: Annotated[SuggestionsRepo, Depends(get_suggestions_repo)],
+    kind: str | None = None,
+) -> list[SuggestionOut]:
+    """People / companies / speakers curated for this conference. Used by the
+    onboarding "mustHaves" step to populate the picker. `kind` is the filter
+    the UI is showing right now (`people`, `companies`, `speakers`)."""
+    if repo.get_conference(conference_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="conference not found")
+    if kind is not None and kind not in VALID_KINDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"kind must be one of {sorted(VALID_KINDS)}",
+        )
+    rows = suggestions_repo.list_for_conference(conference_id)
+    if kind is not None:
+        rows = [r for r in rows if r.get("kind") == kind]
+    return [SuggestionOut.model_validate(r) for r in rows]

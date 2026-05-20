@@ -371,6 +371,54 @@ class SchedulerSettingsUpdate(BaseModel):
     enabled: bool
 
 
+class AdminSuggestionOut(BaseModel):
+    """Returned by GET /api/admin/conferences/{id}/suggestions and by the
+    event-people endpoints. Wider than SuggestionOut because admin tools want
+    `source` to distinguish seed/luma/llm/manual rows."""
+
+    id: str
+    conference_id: str
+    kind: str
+    name: str
+    role: str | None = None
+    source: str | None = None
+
+
+class EventPersonOut(BaseModel):
+    """One person attached to one event, joined for display."""
+
+    suggestion_id: str
+    name: str
+    role: str | None = None
+    person_source: str | None = None  # source on conference_suggestions
+    link_source: str                  # source on event_suggestions ('llm' | 'manual' | 'luma')
+    confidence: float | None = None
+
+
+class EventPersonAttach(BaseModel):
+    """Either attach an existing person by id, or create a new manual person
+    from name+role and attach in one shot. Exactly one of the two must be set."""
+
+    suggestion_id: str | None = None
+    name: str | None = None
+    role: str | None = None
+
+
+class GeneratePeopleResult(BaseModel):
+    """Returned by POST /api/admin/conferences/{id}/generate-people."""
+
+    ok: bool
+    message: str
+    events_considered: int = 0
+    known_people_considered: int = 0
+    new_people_created: int = 0
+    associations_added: int = 0
+    rejected_hallucinations: int = 0
+    tokens_used: int = 0
+    model: str | None = None
+    errors: list[str] = Field(default_factory=list)
+
+
 class ScrapeRunResult(BaseModel):
     """Returned by POST /api/admin/conferences/{id}/scrape."""
 

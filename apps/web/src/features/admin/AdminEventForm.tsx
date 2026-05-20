@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 
 import type { AdminEvent, AdminEventCreate, AdminEventUpdate } from '../../api/admin'
+import { AdminEventPeople } from './AdminEventPeople'
 
 export type EventFormMode =
   | { kind: 'create'; conferenceId: string }
@@ -213,6 +214,10 @@ export function AdminEventForm(props: Props) {
           <span>URL</span>
           <input value={url ?? ''} onChange={(e) => setUrl(e.target.value)} />
         </label>
+
+        {!isCreate && seed && (
+          <AdminEventPeople eventId={seed.id} conferenceId={seed.conference_id} />
+        )}
 
         {props.errorText && <div className="admin__error">{props.errorText}</div>}
 

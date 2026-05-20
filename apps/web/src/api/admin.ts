@@ -82,6 +82,25 @@ export function getConference(id: string): Promise<ConferenceFromApi> {
   return apiFetch<ConferenceFromApi>(`/api/conferences/${encodeURIComponent(id)}`)
 }
 
+// Public — what the onboarding "mustHaves" step shows. No auth.
+export type PublicSuggestion = {
+  id: string
+  conference_id: string
+  kind: 'people' | 'companies' | 'speakers' | string
+  name: string
+  role: string | null
+}
+
+export function listPublicConferenceSuggestions(
+  conferenceId: string,
+  opts: { kind?: 'people' | 'companies' | 'speakers' } = {},
+): Promise<PublicSuggestion[]> {
+  const qs = opts.kind ? `?kind=${encodeURIComponent(opts.kind)}` : ''
+  return apiFetch<PublicSuggestion[]>(
+    `/api/conferences/${encodeURIComponent(conferenceId)}/suggestions${qs}`,
+  )
+}
+
 // ---------- scrape sources ----------
 
 export type ScrapeSource = {
@@ -155,6 +174,84 @@ export function triggerScrape(conferenceId: string): Promise<ScrapeRunResult> {
   return apiFetch<ScrapeRunResult>(
     `/api/admin/conferences/${encodeURIComponent(conferenceId)}/scrape`,
     { method: 'POST' },
+  )
+}
+
+// ---------- LLM people generation + event-people management ----------
+
+export type GeneratePeopleResult = {
+  ok: boolean
+  message: string
+  events_considered: number
+  known_people_considered: number
+  new_people_created: number
+  associations_added: number
+  rejected_hallucinations: number
+  tokens_used: number
+  model: string | null
+  errors: string[]
+}
+
+export type AdminSuggestion = {
+  id: string
+  conference_id: string
+  kind: string
+  name: string
+  role: string | null
+  source: string | null
+}
+
+export type EventPerson = {
+  suggestion_id: string
+  name: string
+  role: string | null
+  person_source: string | null
+  link_source: string  // 'llm' | 'manual' | 'luma'
+  confidence: number | null
+}
+
+export function generateConferencePeople(
+  conferenceId: string,
+): Promise<GeneratePeopleResult> {
+  return apiFetch<GeneratePeopleResult>(
+    `/api/admin/conferences/${encodeURIComponent(conferenceId)}/generate-people`,
+    { method: 'POST' },
+  )
+}
+
+export function listConferenceSuggestions(
+  conferenceId: string,
+  opts: { kind?: 'people' | 'companies' | 'speakers' } = {},
+): Promise<AdminSuggestion[]> {
+  const qs = opts.kind ? `?kind=${encodeURIComponent(opts.kind)}` : ''
+  return apiFetch<AdminSuggestion[]>(
+    `/api/admin/conferences/${encodeURIComponent(conferenceId)}/suggestions${qs}`,
+  )
+}
+
+export function listEventPeople(eventId: string): Promise<EventPerson[]> {
+  return apiFetch<EventPerson[]>(
+    `/api/admin/events/${encodeURIComponent(eventId)}/people`,
+  )
+}
+
+export function attachEventPerson(
+  eventId: string,
+  body: { suggestion_id?: string; name?: string; role?: string | null },
+): Promise<EventPerson> {
+  return apiFetch<EventPerson>(
+    `/api/admin/events/${encodeURIComponent(eventId)}/people`,
+    { method: 'POST', body: JSON.stringify(body) },
+  )
+}
+
+export function detachEventPerson(
+  eventId: string,
+  suggestionId: string,
+): Promise<void> {
+  return apiFetch<void>(
+    `/api/admin/events/${encodeURIComponent(eventId)}/people/${encodeURIComponent(suggestionId)}`,
+    { method: 'DELETE' },
   )
 }
 

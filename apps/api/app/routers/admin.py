@@ -6,18 +6,22 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.deps import CurrentUser, require_admin
 from app.config import get_settings
+from app.deps import CurrentUser, require_admin
 from app.models.schemas import (
     AdminConferenceUpsert,
     AdminEventCreate,
     AdminEventOut,
     AdminEventUpdate,
+    AdminSuggestionOut,
     BulkDeleteEventsResult,
     BulkEventsImportRequest,
     BulkEventsImportResponse,
     BulkImportError,
     ConferenceOut,
+    EventPersonAttach,
+    EventPersonOut,
+    GeneratePeopleResult,
     LockRequest,
     SchedulerSettingsOut,
     SchedulerSettingsUpdate,
@@ -27,9 +31,14 @@ from app.models.schemas import (
     ScrapeSourceUpdate,
 )
 from app.scraper.luma_runner import SourceScrapeStats, run_for_source
-from app.services.suggestions_repo import SuggestionsRepo, get_suggestions_repo
 from app.services.admin_repo import EventsAdminRepo, get_events_admin_repo
 from app.services.catalog import CatalogRepo, get_catalog_repo
+from app.services.event_suggestions_repo import (
+    EventSuggestionsRepo,
+    get_event_suggestions_repo,
+)
+from app.services.llm import LLMClient, get_llm_client
+from app.services.people_generator import generate_people_for_conference
 from app.services.scheduler_settings_repo import (
     SchedulerSettingsRepo,
     get_scheduler_settings_repo,
@@ -38,6 +47,7 @@ from app.services.scrape_sources_repo import (
     ScrapeSourcesRepo,
     get_scrape_sources_repo,
 )
+from app.services.suggestions_repo import SuggestionsRepo, get_suggestions_repo
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +142,7 @@ def delete_event(
 def _derive_event_id(conference_id: str, title: str, starts_at_iso: str) -> str:
     """Stable hash so re-importing the same JSON updates rather than duplicates."""
     digest = hashlib.sha1(
-        f"{title}|{starts_at_iso}".encode("utf-8"), usedforsecurity=False
+        f"{title}|{starts_at_iso}".encode(), usedforsecurity=False
     ).hexdigest()[:16]
     return f"import:{conference_id}:{digest}"
 
@@ -486,6 +496,278 @@ def trigger_scrape(
             }
             for fe in total.failed_events
         ],
+    )
+
+
+# ============================================================================
+# LLM-driven people extraction
+# ============================================================================
+
+
+@router.post(
+    "/conferences/{conference_id}/generate-people",
+    response_model=GeneratePeopleResult,
+)
+async def generate_people(
+    conference_id: str,
+    admin: Annotated[CurrentUser, Depends(require_admin)],
+    catalog: Annotated[CatalogRepo, Depends(get_catalog_repo)],
+    suggestions_repo: Annotated[SuggestionsRepo, Depends(get_suggestions_repo)],
+    event_suggestions_repo: Annotated[
+        EventSuggestionsRepo, Depends(get_event_suggestions_repo)
+    ],
+    llm: Annotated[LLMClient, Depends(get_llm_client)],
+    model: str | None = None,
+) -> GeneratePeopleResult:
+    """Run the LLM over this conference's events + known suggestions, persist
+    associations and any new people it discovers. Idempotent — re-running
+    refreshes confidence on existing (event, person) links rather than
+    duplicating."""
+    if catalog.get_conference(conference_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"conference '{conference_id}' not found",
+        )
+    events = catalog.list_events(conference_id)
+    known_people = [
+        row
+        for row in suggestions_repo.list_for_conference(conference_id)
+        if row.get("kind") == "people"
+    ]
+    stats = await generate_people_for_conference(
+        conference_id=conference_id,
+        events=events,
+        known_people=known_people,
+        llm=llm,
+        suggestions_repo=suggestions_repo,
+        event_suggestions_repo=event_suggestions_repo,
+        model=model,
+    )
+    ok = not stats.errors
+    if stats.errors:
+        message = f"Generation failed: {stats.errors[0]}"
+    elif not events:
+        message = "No events for this conference — nothing to generate."
+    else:
+        message = (
+            f"Added {stats.associations_added} associations across "
+            f"{stats.events_considered} events. "
+            f"Created {stats.new_people_created} new people. "
+            f"Rejected {stats.rejected_hallucinations} hallucinated rows."
+        )
+    logger.info(
+        "admin.generate_people conference=%s tokens=%d new=%d associations=%d "
+        "rejected=%d by=%s",
+        conference_id,
+        stats.tokens_used,
+        stats.new_people_created,
+        stats.associations_added,
+        stats.rejected_hallucinations,
+        admin.id,
+    )
+    return GeneratePeopleResult(
+        ok=ok,
+        message=message,
+        events_considered=stats.events_considered,
+        known_people_considered=stats.known_people_considered,
+        new_people_created=stats.new_people_created,
+        associations_added=stats.associations_added,
+        rejected_hallucinations=stats.rejected_hallucinations,
+        tokens_used=stats.tokens_used,
+        model=stats.model or None,
+        errors=stats.errors,
+    )
+
+
+# ============================================================================
+# Event-people: list/attach/detach (manual admin curation)
+# ============================================================================
+
+
+@router.get(
+    "/conferences/{conference_id}/suggestions",
+    response_model=list[AdminSuggestionOut],
+)
+def list_conference_suggestions(
+    conference_id: str,
+    admin: Annotated[CurrentUser, Depends(require_admin)],
+    suggestions_repo: Annotated[SuggestionsRepo, Depends(get_suggestions_repo)],
+    catalog: Annotated[CatalogRepo, Depends(get_catalog_repo)],
+    kind: str | None = None,
+) -> list[AdminSuggestionOut]:
+    """All conference_suggestions for a conference. Filter by `kind=people`
+    when populating the event-people picker."""
+    if catalog.get_conference(conference_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"conference '{conference_id}' not found",
+        )
+    rows = suggestions_repo.list_for_conference(conference_id)
+    if kind is not None:
+        rows = [r for r in rows if r.get("kind") == kind]
+    return [AdminSuggestionOut.model_validate(r) for r in rows]
+
+
+@router.get(
+    "/events/{event_id}/people",
+    response_model=list[EventPersonOut],
+)
+def list_event_people(
+    event_id: str,
+    admin: Annotated[CurrentUser, Depends(require_admin)],
+    events_repo: Annotated[EventsAdminRepo, Depends(get_events_admin_repo)],
+    suggestions_repo: Annotated[SuggestionsRepo, Depends(get_suggestions_repo)],
+    event_suggestions_repo: Annotated[
+        EventSuggestionsRepo, Depends(get_event_suggestions_repo)
+    ],
+) -> list[EventPersonOut]:
+    if events_repo.get_event(event_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"event '{event_id}' not found",
+        )
+    links = event_suggestions_repo.list_for_event(event_id)
+    out: list[EventPersonOut] = []
+    for link in links:
+        person = suggestions_repo.get_by_id(link["suggestion_id"])
+        if person is None:
+            # Suggestion was deleted underneath us. Skip — the link will be
+            # GC'd by the FK cascade on the next conference_suggestions delete.
+            continue
+        out.append(
+            EventPersonOut(
+                suggestion_id=person["id"],
+                name=person["name"],
+                role=person.get("role"),
+                person_source=person.get("source"),
+                link_source=link["source"],
+                confidence=link.get("confidence"),
+            )
+        )
+    return out
+
+
+@router.post(
+    "/events/{event_id}/people",
+    response_model=EventPersonOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def attach_event_person(
+    event_id: str,
+    body: EventPersonAttach,
+    admin: Annotated[CurrentUser, Depends(require_admin)],
+    events_repo: Annotated[EventsAdminRepo, Depends(get_events_admin_repo)],
+    suggestions_repo: Annotated[SuggestionsRepo, Depends(get_suggestions_repo)],
+    event_suggestions_repo: Annotated[
+        EventSuggestionsRepo, Depends(get_event_suggestions_repo)
+    ],
+) -> EventPersonOut:
+    """Attach a person to an event. Either provide `suggestion_id` (an
+    existing person already curated for the conference) or `name` (+ optional
+    `role`) to create a new manual person and attach in one call."""
+    event = events_repo.get_event(event_id)
+    if event is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"event '{event_id}' not found",
+        )
+    has_id = bool(body.suggestion_id and body.suggestion_id.strip())
+    has_name = bool(body.name and body.name.strip())
+    if has_id == has_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="provide exactly one of suggestion_id or name",
+        )
+
+    if has_id:
+        suggestion_id = body.suggestion_id.strip()  # type: ignore[union-attr]
+        person = suggestions_repo.get_by_id(suggestion_id)
+        if person is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"suggestion '{suggestion_id}' not found",
+            )
+        if person["conference_id"] != event["conference_id"]:
+            # Don't allow linking a person to an event in a different
+            # conference — the picker should never offer that, but defend
+            # against direct API calls anyway.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="suggestion belongs to a different conference",
+            )
+    else:
+        new_id = suggestions_repo.upsert_manual_person(
+            conference_id=event["conference_id"],
+            name=body.name or "",  # has_name guard ensures truthy
+            role=body.role,
+        )
+        if not new_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="name produced an empty slug — provide a valid name",
+            )
+        suggestion_id = new_id
+        person = suggestions_repo.get_by_id(new_id)
+        if person is None:
+            # Extremely unlikely — upsert just succeeded.
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="newly created person could not be loaded",
+            )
+
+    written = event_suggestions_repo.upsert_links(
+        [
+            {
+                "event_id": event_id,
+                "suggestion_id": suggestion_id,
+                "source": "manual",
+                "confidence": None,
+            }
+        ]
+    )
+    if not written:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed to write event link",
+        )
+    logger.info(
+        "admin.attach_event_person event=%s suggestion=%s by=%s",
+        event_id,
+        suggestion_id,
+        admin.id,
+    )
+    return EventPersonOut(
+        suggestion_id=suggestion_id,
+        name=person["name"],
+        role=person.get("role"),
+        person_source=person.get("source"),
+        link_source="manual",
+        confidence=None,
+    )
+
+
+@router.delete(
+    "/events/{event_id}/people/{suggestion_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def detach_event_person(
+    event_id: str,
+    suggestion_id: str,
+    admin: Annotated[CurrentUser, Depends(require_admin)],
+    event_suggestions_repo: Annotated[
+        EventSuggestionsRepo, Depends(get_event_suggestions_repo)
+    ],
+) -> None:
+    """Detach a person from an event. Idempotent — returns 204 whether or not
+    the link existed (404 felt noisy for an "undo this checkbox" interaction).
+    Note: the underlying person row in conference_suggestions is preserved;
+    only the (event, person) edge is removed."""
+    event_suggestions_repo.delete_link(event_id, suggestion_id)
+    logger.info(
+        "admin.detach_event_person event=%s suggestion=%s by=%s",
+        event_id,
+        suggestion_id,
+        admin.id,
     )
 
 
