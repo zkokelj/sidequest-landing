@@ -13,14 +13,17 @@ import {
   User as UserIcon,
   X,
 } from 'lucide-react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 
 import SymbolSVG from '../../assets/Symbol.svg'
 import WhiteLogoSVG from '../../assets/White.svg'
 import { CONFERENCES, type Conference } from '../../data/conferences'
 import { GOALS_BY_ROLE, ROLES, TOPICS } from '../../data/roles'
-import { SUGGESTIONS } from '../../data/suggestions'
+import {
+  listPublicConferenceSuggestions,
+  type PublicSuggestion,
+} from '../../api/admin'
 import { curate } from '../../api/curate'
 import { useConferences } from '../../hooks/useConferences'
 import { useOnboarding } from '../../stores/onboardingStore'
@@ -223,6 +226,7 @@ export default function Onboarding() {
         )}
         {step === 9 && (
           <MustHavesStep
+            conferenceId={state.conferenceId}
             value={state.mustHaves}
             onChange={(v) => store.set({ mustHaves: v })}
             onBack={back}
@@ -777,13 +781,26 @@ function SocialStep({
   )
 }
 
+// Initials for the avatar circle. "Stani Kulechov" → "SK"; "Hasu" → "Hs";
+// "Aave" → "Aa". Falls back to "?" for empty strings so we never crash on
+// malformed data from the API.
+function deriveInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase()
+  const w = parts[0] ?? ''
+  if (!w) return '?'
+  return (w[0] + (w[1] ?? '')).toUpperCase()
+}
+
 function MustHavesStep({
+  conferenceId,
   value,
   onChange,
   onBack,
   onSkip,
   onNext,
 }: {
+  conferenceId: string
   value: string[]
   onChange: (v: string[]) => void
   onBack: () => void
@@ -792,22 +809,43 @@ function MustHavesStep({
 }) {
   const [tab, setTab] = useState<'people' | 'companies' | 'speakers'>('people')
   const [query, setQuery] = useState('')
+
+  // Strict per-conference: empty list when API returns nothing. No hardcoded
+  // fallback (post-pivot decision — see CLAUDE.md). On network error we still
+  // render the UI with empty suggestions so the user can skip the step.
+  const q = useQuery({
+    queryKey: ['public', 'suggestions', conferenceId],
+    queryFn: () => listPublicConferenceSuggestions(conferenceId),
+    enabled: !!conferenceId,
+    retry: 1,
+    staleTime: 60_000,
+  })
+  const all: PublicSuggestion[] = q.data ?? []
+
+  // Lookup by id for the "you picked these" pills above. `value` may contain
+  // legacy ids from a prior conference (state persists in localStorage), so
+  // we fall back to showing the raw id rather than dropping the pill.
+  const byId = useMemo(() => {
+    const m = new Map<string, PublicSuggestion>()
+    for (const s of all) m.set(s.id, s)
+    return m
+  }, [all])
+
   const add = (id: string) => {
     if (!value.includes(id)) onChange([...value, id])
   }
   const remove = (id: string) => onChange(value.filter((x) => x !== id))
-  const idToLabel = (id: string) => {
-    const s = SUGGESTIONS.find((x) => x.id === id)
-    return s ? s.name : id
-  }
-  const idToGrad = (id: string) => SUGGESTIONS.find((x) => x.id === id)?.grad
-  const visibleSuggestions = SUGGESTIONS.filter(
+  const idToLabel = (id: string) => byId.get(id)?.name ?? id
+
+  const queryLower = query.toLowerCase()
+  const visibleSuggestions = all.filter(
     (s) =>
       s.kind === tab &&
       !value.includes(s.id) &&
-      (s.name.toLowerCase().includes(query.toLowerCase()) ||
-        s.role.toLowerCase().includes(query.toLowerCase())),
+      (s.name.toLowerCase().includes(queryLower) ||
+        (s.role ?? '').toLowerCase().includes(queryLower)),
   )
+
   return (
     <div className="scr">
       <Header step={10} total={TOTAL_STEPS} onBack={onBack} onSkip={onSkip} />
@@ -835,7 +873,7 @@ function MustHavesStep({
         <div className="pill-list">
           {value.map((v) => (
             <span key={v} className="pill">
-              <span className="av" style={idToGrad(v) ? { background: idToGrad(v) } : undefined} />
+              <span className="av" />
               {idToLabel(v)}
               <button className="x" onClick={() => remove(v)}>
                 <X size={12} />
@@ -857,14 +895,24 @@ function MustHavesStep({
         Suggested
       </div>
       <div className="suggest-list">
+        {q.isLoading && (
+          <div style={{ padding: '12px 4px', color: 'var(--fg-muted)', fontSize: 13 }}>
+            Loading…
+          </div>
+        )}
+        {!q.isLoading && visibleSuggestions.length === 0 && (
+          <div style={{ padding: '12px 4px', color: 'var(--fg-muted)', fontSize: 13 }}>
+            {query
+              ? `No ${tab} match "${query}".`
+              : `No ${tab} for this conference yet — try a search or skip this step.`}
+          </div>
+        )}
         {visibleSuggestions.map((s) => (
           <button key={s.id} className="suggest" onClick={() => add(s.id)}>
-            <div className="suggest__av" style={s.grad ? { background: s.grad } : undefined}>
-              {s.initials}
-            </div>
+            <div className="suggest__av">{deriveInitials(s.name)}</div>
             <div className="suggest__body">
               <div className="suggest__name">{s.name}</div>
-              <div className="suggest__role">{s.role}</div>
+              <div className="suggest__role">{s.role ?? ''}</div>
             </div>
             <div className="suggest__add">
               <Plus />

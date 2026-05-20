@@ -8,6 +8,7 @@ import {
   type AdminConferenceDay,
   type ConferenceFromApi,
 } from '../../api/admin'
+import { AdminGeneratePeoplePanel } from './AdminGeneratePeoplePanel'
 import { AdminScrapeSourcesPanel } from './AdminScrapeSourcesPanel'
 
 const NEW_MARKER = '__new__'
@@ -335,7 +336,12 @@ function ConferenceEditor(props: {
       </div>
 
     </form>
-    {!props.isCreate && c.id && <AdminScrapeSourcesPanel conferenceId={c.id} />}
+    {!props.isCreate && c.id && (
+      <>
+        <AdminScrapeSourcesPanel conferenceId={c.id} />
+        <AdminGeneratePeoplePanel conferenceId={c.id} />
+      </>
+    )}
     </>
   )
 }
