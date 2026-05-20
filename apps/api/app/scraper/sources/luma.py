@@ -11,6 +11,8 @@ to match the rest of the codebase and to get sane timeouts.
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -119,6 +121,62 @@ def _extract_tags(details: dict[str, Any]) -> list[str]:
             seen.add(slug)
             out.append(slug)
     return out
+
+
+_ISO8601_DURATION_RE = re.compile(
+    r"^P"
+    r"(?:(?P<years>\d+)Y)?"
+    r"(?:(?P<months>\d+)M)?"
+    r"(?:(?P<days>\d+)D)?"
+    r"(?:T"
+    r"(?:(?P<hours>\d+)H)?"
+    r"(?:(?P<minutes>\d+)M)?"
+    r"(?:(?P<seconds>\d+(?:\.\d+)?)S)?"
+    r")?$"
+)
+
+
+def _is_external_entry(entry: dict[str, Any]) -> bool:
+    """True when the calendar entry is an external (non-Luma) event.
+
+    Luma marks bookmarked third-party events (Eventbrite, plain URLs, etc.)
+    with platform='external'. These entries lack `event.api_id` but still
+    carry name/start_at/url and a stable `calev-…` id on the envelope.
+    """
+    if (entry.get("platform") or "").lower() == "external":
+        return True
+    event = entry.get("event") or {}
+    # Fallback: entry has its own calev id but no event api_id — same shape.
+    return bool(entry.get("api_id")) and not event.get("api_id")
+
+
+def _end_at_from_duration(
+    start_at: str | None, duration_interval: str | None
+) -> str | None:
+    """Compute end_at from ISO 8601 start + duration. Best-effort; None on parse fail."""
+    if not start_at or not duration_interval:
+        return None
+    m = _ISO8601_DURATION_RE.match(duration_interval)
+    if not m:
+        return None
+    parts = {k: float(v) if v else 0 for k, v in m.groupdict().items()}
+    # Treat year/month as 365/30 days — only used when Luma omits end_at,
+    # and external events virtually always express duration in H/M/S.
+    delta = timedelta(
+        days=parts["years"] * 365 + parts["months"] * 30 + parts["days"],
+        hours=parts["hours"],
+        minutes=parts["minutes"],
+        seconds=parts["seconds"],
+    )
+    try:
+        dt = datetime.fromisoformat(start_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    end = dt + delta
+    # Preserve the original "Z" suffix style if the input used it.
+    if start_at.endswith("Z"):
+        return end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return end.isoformat()
 
 
 def _resolve_venue(event: dict[str, Any]) -> str | None:
@@ -279,27 +337,46 @@ def normalize_event(
     """Map a Luma entry (+ optional details) to an `events` row.
 
     Returns None if the entry is missing required fields (id, name, timestamps).
-    The id is deterministic — `luma:{api_id}` — so re-scrapes are idempotent
-    via `EventsAdminRepo.scraper_upsert`.
+    The id is deterministic so re-scrapes are idempotent via
+    `EventsAdminRepo.scraper_upsert`:
+      - `luma:{event_api_id}`  for native Luma events
+      - `luma-ext:{calev_id}`  for external (bookmarked) events with
+                               platform='external' and no `event.api_id`.
     """
     event = entry.get("event") or {}
-    api_id = event.get("api_id")
     title = event.get("name")
     starts_at = event.get("start_at")
-    ends_at = event.get("end_at") or starts_at  # some Luma events lack end_at
 
-    if not (api_id and title and starts_at):
-        slug = event.get("url")
-        url = f"{LUMA_WEB_BASE}/{slug}" if slug else None
+    is_external = _is_external_entry(entry)
+    if is_external:
+        # External events use the calendar-entry id (`calev-…`) as the stable
+        # key — `event.api_id` is absent. Prefix with `luma-ext:` to keep them
+        # visually distinct from native Luma events in the events table.
+        api_id = entry.get("api_id")
+        event_id = f"luma-ext:{api_id}" if api_id else None
+        # External `event.url` is already a full URL (eventbrite, etc.).
+        raw_url = event.get("url")
+        url = raw_url if raw_url and "://" in raw_url else None
+        ends_at = (
+            event.get("end_at")
+            or _end_at_from_duration(starts_at, event.get("duration_interval"))
+            or starts_at
+        )
+    else:
+        api_id = event.get("api_id")
+        event_id = f"luma:{api_id}" if api_id else None
+        # Native Luma URLs are bare slugs; resolve against the web base.
+        url = f"{LUMA_WEB_BASE}/{event['url']}" if event.get("url") else None
+        ends_at = event.get("end_at") or starts_at  # some Luma events lack end_at
+
+    if not (event_id and title and starts_at):
         logger.warning(
-            "luma.normalize skipped api_id=%s title=%s starts_at=%s url=%s",
-            api_id, title, starts_at, url,
+            "luma.normalize skipped external=%s id=%s title=%s starts_at=%s url=%s",
+            is_external, event_id, title, starts_at, url,
         )
         return None
 
     venue = _resolve_venue(event)
-
-    url = f"{LUMA_WEB_BASE}/{event['url']}" if event.get("url") else None
 
     description: str | None = None
     capacity: int | None = None
@@ -317,7 +394,7 @@ def normalize_event(
     cover_url = event.get("cover_url") or None
 
     return {
-        "id": f"luma:{api_id}",
+        "id": event_id,
         "conference_id": conference_id,
         "title": title,
         "description": description,

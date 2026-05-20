@@ -269,6 +269,45 @@ def test_run_for_source_captures_hosts_and_featured_guests() -> None:
     assert rows["DavideFi"]["meta"]["source_event_id"] == "luma:e1"
 
 
+def test_run_for_source_ingests_external_entries_on_calendar() -> None:
+    """External (non-Luma) events on a Luma calendar should be ingested too.
+
+    Luma marks them with platform='external' and omits event.api_id. The
+    envelope's `calev-…` id gives us a stable upsert key, and event.url is
+    already a full URL (eventbrite, etc.) — must not be wrapped in lu.ma/.
+    Regression for the rsv.pizza incident.
+    """
+    external_entry = {
+        "api_id": "calev-eLBAQXU9wWElF2q",
+        "platform": "external",
+        "event": {
+            "name": "Global Pizza Party Milan (Inside ETHMilan)",
+            "start_at": "2026-10-06T19:00:00.000Z",
+            "duration_interval": "P0Y0M0DT4H0M0S",
+            "url": "https://www.rsv.pizza/milan",
+            "geo_address_info": {"city_state": "Milano, Italy"},
+        },
+    }
+    handler = _build_handler(events_by_calendar={"cal_xyz": [external_entry]})
+    repo = InMemoryEventsAdminRepo()
+
+    with _scraper_with(handler) as scraper:
+        stats = run_for_source(
+            conference_id="ethmilan",
+            source_url="https://lu.ma/ethmilan",
+            events_repo=repo,
+            scraper=scraper,
+        )
+
+    assert stats.events_added == 1
+    assert stats.events_failed == 0
+    row = repo.get_event("luma-ext:calev-eLBAQXU9wWElF2q")
+    assert row is not None
+    assert row["title"] == "Global Pizza Party Milan (Inside ETHMilan)"
+    assert row["url"] == "https://www.rsv.pizza/milan"
+    assert row["ends_at"] == "2026-10-06T23:00:00.000Z"
+
+
 def test_run_for_source_without_suggestions_repo_skips_capture() -> None:
     """Backwards-compat: callers that don't pass a suggestions_repo must
     still work — the events upsert path is unchanged."""

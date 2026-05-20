@@ -241,6 +241,87 @@ def test_normalize_event_no_end_at_falls_back_to_start() -> None:
     assert row["ends_at"] == row["starts_at"]
 
 
+# ---------- external (non-Luma) entries on a Luma calendar ----------
+
+
+def _external_entry(**event_overrides: Any) -> dict[str, Any]:
+    """Shape that Luma returns for bookmarked third-party events.
+
+    The outer envelope carries platform='external' + a stable calev id.
+    `event.api_id` is intentionally absent — only the envelope id is stable.
+    """
+    base = {
+        "api_id": "calev-eLBAQXU9wWElF2q",
+        "platform": "external",
+        "event": {
+            "name": "Global Pizza Party Milan",
+            "start_at": "2026-10-06T19:00:00.000Z",
+            "duration_interval": "P0Y0M0DT4H0M0S",
+            "host": "rsv.pizza",
+            "url": "https://www.rsv.pizza/milan",
+            "geo_address_info": {"city_state": "Milano, Italy"},
+            "timezone": "Europe/Rome",
+        },
+    }
+    base["event"].update(event_overrides)
+    return base
+
+
+def test_normalize_event_external_uses_calev_id_and_raw_url() -> None:
+    row = normalize_event(_external_entry(), conference_id="ethmilan")
+    assert row is not None
+    assert row["id"] == "luma-ext:calev-eLBAQXU9wWElF2q"
+    assert row["title"] == "Global Pizza Party Milan"
+    assert row["url"] == "https://www.rsv.pizza/milan"
+    assert row["venue"] == "Milano, Italy"
+
+
+def test_normalize_event_external_computes_end_from_duration() -> None:
+    row = normalize_event(_external_entry(), conference_id="c1")
+    assert row is not None
+    # 19:00 + 4h = 23:00
+    assert row["ends_at"] == "2026-10-06T23:00:00.000Z"
+
+
+def test_normalize_event_external_falls_back_to_start_when_no_duration() -> None:
+    row = normalize_event(
+        _external_entry(duration_interval=None), conference_id="c1"
+    )
+    assert row is not None
+    assert row["ends_at"] == row["starts_at"]
+
+
+def test_normalize_event_external_explicit_end_at_wins_over_duration() -> None:
+    row = normalize_event(
+        _external_entry(end_at="2026-10-06T22:30:00.000Z"), conference_id="c1"
+    )
+    assert row is not None
+    assert row["ends_at"] == "2026-10-06T22:30:00.000Z"
+
+
+def test_normalize_event_external_missing_envelope_id_returns_none(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    e = _external_entry()
+    e["api_id"] = None
+    caplog.set_level("WARNING")
+    assert normalize_event(e, conference_id="c1") is None
+    assert "skipped" in caplog.text
+
+
+def test_normalize_event_external_no_details_fetched() -> None:
+    """External entries don't have a Luma event_api_id, so /event/get is never
+    called — description/capacity/tags stay None/empty even if a details dict
+    is (incorrectly) passed in alongside. We still tolerate it without crashing."""
+    row = normalize_event(_external_entry(), conference_id="c1", details=None)
+    assert row is not None
+    assert row["description"] is None
+    assert row["capacity"] is None
+    assert row["attendees"] is None
+    assert row["tags"] == []
+    assert row["tint_color"] is None
+
+
 # ---------- LumaScraper with mocked transport ----------
 
 
