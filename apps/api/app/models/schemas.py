@@ -42,6 +42,8 @@ class EventOut(BaseModel):
     url: str | None = None
     capacity: int | None = None
     attendees: int | None = None
+    cover_url: str | None = None
+    tint_color: str | None = None
 
 
 class SuggestionOut(BaseModel):
@@ -151,6 +153,8 @@ class ScheduleItem(BaseModel):
     url: str | None = None
     capacity: int | None = None
     attendees: int | None = None
+    cover_url: str | None = None
+    tint_color: str | None = None
     # Curation overlay
     rationale: str
     priority: str  # 'must' | 'should' | 'maybe'
@@ -195,6 +199,8 @@ class AdminEventCreate(BaseModel):
     url: str | None = None
     capacity: int | None = None
     attendees: int | None = None
+    cover_url: str | None = None
+    tint_color: str | None = None
 
 
 class AdminEventUpdate(BaseModel):
@@ -208,6 +214,8 @@ class AdminEventUpdate(BaseModel):
     url: str | None = None
     capacity: int | None = None
     attendees: int | None = None
+    cover_url: str | None = None
+    tint_color: str | None = None
 
 
 class AdminEventOut(BaseModel):
@@ -222,6 +230,8 @@ class AdminEventOut(BaseModel):
     url: str | None = None
     capacity: int | None = None
     attendees: int | None = None
+    cover_url: str | None = None
+    tint_color: str | None = None
     is_manual: bool
     locked: bool
     updated_by: str | None = None
@@ -249,6 +259,8 @@ class BulkEventInput(BaseModel):
     url: str | None = None
     capacity: int | None = None
     attendees: int | None = None
+    cover_url: str | None = None
+    tint_color: str | None = None
 
 
 class BulkEventsImportRequest(BaseModel):

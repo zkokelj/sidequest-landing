@@ -162,6 +162,24 @@ def test_normalize_event_missing_required_returns_none(caplog: pytest.LogCapture
     assert "skipped" in caplog.text
 
 
+def test_normalize_event_captures_cover_url_and_tint_color() -> None:
+    """Cover URL lives on the calendar entry; tint_color lives in /event/get."""
+    e = _entry()
+    e["event"]["cover_url"] = "https://images.lumacdn.com/event-covers/abc.jpg"
+    details = {"tint_color": "#146AEB"}
+    row = normalize_event(e, conference_id="c1", details=details)
+    assert row is not None
+    assert row["cover_url"] == "https://images.lumacdn.com/event-covers/abc.jpg"
+    assert row["tint_color"] == "#146AEB"
+
+
+def test_normalize_event_cover_and_tint_default_to_none() -> None:
+    row = normalize_event(_entry(), conference_id="c1")
+    assert row is not None
+    assert row["cover_url"] is None
+    assert row["tint_color"] is None
+
+
 def test_normalize_event_maps_categories_to_tags() -> None:
     """Luma's /event/get returns categories[]; we lift the slugs into events.tags
     so the schedule UI can filter on them."""

@@ -35,6 +35,8 @@ def _to_schedule_item(
         url=event.url,
         capacity=event.capacity,
         attendees=event.attendees,
+        cover_url=event.cover_url,
+        tint_color=event.tint_color,
         rationale=rationale,
         priority=priority,
         inSchedule=True,

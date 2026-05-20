@@ -24,7 +24,8 @@ from app.config import Settings, get_settings
 
 _EVENT_COLUMNS = (
     "id,conference_id,title,description,starts_at,ends_at,venue,tags,url,"
-    "capacity,attendees,source,is_manual,locked,updated_by,updated_at,created_at"
+    "capacity,attendees,cover_url,tint_color,source,is_manual,locked,"
+    "updated_by,updated_at,created_at"
 )
 
 

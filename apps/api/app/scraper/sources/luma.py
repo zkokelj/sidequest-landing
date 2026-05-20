@@ -305,12 +305,16 @@ def normalize_event(
     capacity: int | None = None
     attendees: int | None = None
     tags: list[str] = []
+    tint_color: str | None = None
     if details:
         desc_mirror = details.get("description_mirror") or {}
         description = extract_text_from_description(desc_mirror.get("content")) or None
         capacity = details.get("capacity")
         attendees = details.get("guest_count")
         tags = _extract_tags(details)
+        tint_color = details.get("tint_color") or None
+
+    cover_url = event.get("cover_url") or None
 
     return {
         "id": f"luma:{api_id}",
@@ -324,6 +328,8 @@ def normalize_event(
         "url": url,
         "capacity": capacity,
         "attendees": attendees,
+        "cover_url": cover_url,
+        "tint_color": tint_color,
         "source": source or "luma",
         "raw": {"entry": entry, "details": details},
     }
